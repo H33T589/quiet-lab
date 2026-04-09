@@ -1,0 +1,29 @@
+# Ollama-managed model data and large local model files
+models/.ollama/
+models/**/*.gguf
+models/**/*.bin
+models/**/*.safetensors
+models/**/*.onnx
+models/**/*.pt
+models/**/*.pth
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+
+# Local outputs, logs, caches, and scratch data
+logs/
+output/
+outputs/
+tmp/
+temp/
+cache/
+.cache/
+
+# Editor and OS noise
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*.swo
