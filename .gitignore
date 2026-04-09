@@ -27,3 +27,6 @@ cache/
 .idea/
 *.swp
 *.swo
+
+# Node starter app artifacts
+node_modules/

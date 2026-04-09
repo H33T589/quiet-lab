@@ -1,6 +1,16 @@
 # local-ai-experiments
 
-Small local AI workspace for models, notes, and experiments.
+A small workspace for running local models, keeping notes, and building lightweight experiments on top of `Ollama`.
+
+## Overview
+
+This repository is organized around three things:
+
+- `models/` for local model storage and runtime-managed data
+- `notes/` for prompts, setup notes, and findings worth keeping
+- `projects/` for scripts, prototypes, and small apps
+
+The goal is to keep code and notes in git while keeping downloaded model data out of git.
 
 ## Layout
 
@@ -10,9 +20,15 @@ Small local AI workspace for models, notes, and experiments.
 
 ## Ollama Storage
 
-`Ollama` is configured to use this folder via the symlink at [`~/.ollama`](/Users/h33tpatel/.ollama), which points to [`models/.ollama/`](/Users/h33tpatel/Documents/local-ai-experiments/models/.ollama).
+`Ollama` can be pointed at `models/.ollama/` so model downloads and runtime state stay inside this workspace.
 
-That directory is intentionally ignored by git because it contains downloaded models and runtime state.
+That directory is intentionally ignored by git because it contains downloaded models, local keys, and runtime state.
+
+## Quick Start
+
+1. Install and start `Ollama`.
+2. Pull a small default model such as `llama3.2:3b`.
+3. Use the starter app in `projects/ollama-chat/` to talk to the local API.
 
 ## What To Commit
 
@@ -32,3 +48,9 @@ That directory is intentionally ignored by git because it contains downloaded mo
 1. Keep your default local model small on this machine. On an `M2` with `8 GB` RAM, `llama3.2:3b` is the safer default.
 2. Put reusable scripts in `projects/`.
 3. Keep prompts, install notes, and benchmark results in `notes/`.
+
+## Starter App
+
+A minimal zero-dependency `Ollama` CLI starter lives in [`projects/ollama-chat/`](./projects/ollama-chat).
+
+It talks to the local `Ollama` HTTP API directly and is a good baseline before you build anything more agentic.

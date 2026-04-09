@@ -1,0 +1,11 @@
+{
+  "name": "ollama-chat",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Minimal local CLI chat app for Ollama",
+  "type": "module",
+  "scripts": {
+    "start": "node index.mjs",
+    "chat": "node index.mjs"
+  }
+}
