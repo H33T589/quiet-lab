@@ -1,4 +1,4 @@
-# local-ai-experiments
+# quiet-lab
 
 A small workspace for running local models, keeping notes, and building lightweight experiments on top of `Ollama`.
 
