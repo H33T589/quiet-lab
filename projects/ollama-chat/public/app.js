@@ -1,0 +1,695 @@
+const state = {
+  currentFile: null,
+  currentRepoPath: ".",
+  currentSessionId: null,
+  filePreview: null,
+  messages: [],
+  meta: null,
+  model: null,
+  preset: null,
+  repoEntries: [],
+  repoFilter: "",
+  sessions: [],
+  sending: false,
+  statusText: "Loading workspace...",
+  statusTone: "neutral",
+  toolEvents: [],
+};
+
+const elements = {
+  chatLog: document.querySelector("#chat-log"),
+  clearToolsButton: document.querySelector("#clear-tools-button"),
+  composerForm: document.querySelector("#composer-form"),
+  composerInput: document.querySelector("#composer-input"),
+  filePreview: document.querySelector("#file-preview"),
+  filePreviewTitle: document.querySelector("#file-preview-title"),
+  messageTemplate: document.querySelector("#message-template"),
+  modelSelect: document.querySelector("#model-select"),
+  newSessionButton: document.querySelector("#new-session-button"),
+  presetSelect: document.querySelector("#preset-select"),
+  quickPromptButtons: document.querySelectorAll(".quick-prompts button"),
+  repoBreadcrumbs: document.querySelector("#repo-breadcrumbs"),
+  repoFilterInput: document.querySelector("#repo-filter-input"),
+  repoRootButton: document.querySelector("#repo-root-button"),
+  repoTree: document.querySelector("#repo-tree"),
+  resetSessionButton: document.querySelector("#reset-session-button"),
+  selectedFileButton: document.querySelector("#selected-file-button"),
+  sendButton: document.querySelector("#send-button"),
+  sessionList: document.querySelector("#session-list"),
+  sessionStats: document.querySelector("#session-stats"),
+  sessionTitle: document.querySelector("#session-title"),
+  statusBanner: document.querySelector("#status-banner"),
+  statusText: document.querySelector("#status-text"),
+  toolEvents: document.querySelector("#tool-events"),
+};
+
+function escapeHtml(value) {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function renderMarkdown(input) {
+  let html = escapeHtml(input);
+
+  html = html.replace(/```([\s\S]*?)```/g, (_match, code) => {
+    return `<pre>${escapeHtml(code.trim())}</pre>`;
+  });
+  html = html.replace(/`([^`]+)`/g, "<code>$1</code>");
+  html = html
+    .split(/\n{2,}/)
+    .map((block) => `<p>${block.replace(/\n/g, "<br />")}</p>`)
+    .join("");
+
+  return html;
+}
+
+async function fetchJson(url, options = {}) {
+  const response = await fetch(url, {
+    headers: {
+      "Content-Type": "application/json",
+    },
+    ...options,
+  });
+
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(payload.error || "Request failed");
+  }
+
+  return response.json();
+}
+
+function setStatus(text, tone = "neutral") {
+  state.statusText = text;
+  state.statusTone = tone;
+}
+
+function getSessionTitle(session) {
+  return session?.title || session?.sessionId || "New session";
+}
+
+function getVisibleMessages() {
+  return state.messages.filter((message) => message.role !== "system" && message.role !== "tool");
+}
+
+function formatRelativeTime(value) {
+  if (!value) {
+    return "not saved";
+  }
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "not saved";
+  }
+
+  const deltaSeconds = Math.max(0, Math.round((Date.now() - date.getTime()) / 1000));
+
+  if (deltaSeconds < 60) {
+    return "just now";
+  }
+
+  const deltaMinutes = Math.round(deltaSeconds / 60);
+  if (deltaMinutes < 60) {
+    return `${deltaMinutes}m ago`;
+  }
+
+  const deltaHours = Math.round(deltaMinutes / 60);
+  if (deltaHours < 24) {
+    return `${deltaHours}h ago`;
+  }
+
+  const deltaDays = Math.round(deltaHours / 24);
+  return `${deltaDays}d ago`;
+}
+
+function setSessionState(session) {
+  state.currentSessionId = session.sessionId;
+  state.messages = session.messages || [];
+  state.model = session.model;
+  state.preset = session.preset;
+  elements.sessionTitle.textContent = getSessionTitle(session);
+}
+
+function renderStatus() {
+  elements.statusBanner.className = `status-banner ${state.statusTone}`;
+  elements.statusText.textContent = state.statusText;
+}
+
+function renderSessionStats() {
+  const activeSession = state.sessions.find((session) => session.sessionId === state.currentSessionId);
+  const stats = [
+    `${getVisibleMessages().length} messages`,
+    state.model || state.meta?.defaultModel || "no model",
+    state.preset || "coder",
+    formatRelativeTime(activeSession?.updatedAt),
+  ];
+
+  elements.sessionStats.innerHTML = stats
+    .map((item) => `<span>${escapeHtml(item)}</span>`)
+    .join("");
+}
+
+function renderSessions() {
+  elements.sessionList.innerHTML = "";
+
+  if (!state.sessions.length) {
+    elements.sessionList.innerHTML = `<p class="empty-state">No saved sessions yet.</p>`;
+    return;
+  }
+
+  for (const session of state.sessions) {
+    const card = document.createElement("button");
+    card.type = "button";
+    card.className = `session-card${session.sessionId === state.currentSessionId ? " active" : ""}`;
+    card.disabled = state.sending;
+    card.innerHTML = `
+      <h4>${escapeHtml(session.title || session.sessionId)}</h4>
+      <p>${escapeHtml(session.preset || "coder")} · ${escapeHtml(session.model || state.meta?.defaultModel || "")} · ${escapeHtml(formatRelativeTime(session.updatedAt))}</p>
+    `;
+    card.addEventListener("click", () => loadSession(session.sessionId));
+    elements.sessionList.append(card);
+  }
+}
+
+function renderMessages() {
+  elements.chatLog.innerHTML = "";
+
+  if (!state.messages.length) {
+    elements.chatLog.innerHTML = `<p class="empty-state">Start with a repo question, a code prompt, or a brainstorming ask.</p>`;
+    return;
+  }
+
+  for (const message of state.messages) {
+    if (message.role === "system" || message.role === "tool") {
+      continue;
+    }
+
+    const node = elements.messageTemplate.content.firstElementChild.cloneNode(true);
+    node.classList.add(message.role);
+    node.querySelector(".message-meta").textContent = message.role;
+    node.querySelector(".message-body").innerHTML = renderMarkdown(message.content || "");
+    elements.chatLog.append(node);
+  }
+
+  elements.chatLog.scrollTop = elements.chatLog.scrollHeight;
+}
+
+function renderToolEvents() {
+  elements.toolEvents.innerHTML = "";
+
+  if (!state.toolEvents.length) {
+    elements.toolEvents.innerHTML = `<p class="empty-state">Tool calls will show up here during repo-aware turns.</p>`;
+    return;
+  }
+
+  for (const event of state.toolEvents.slice(-8).reverse()) {
+    const card = document.createElement("article");
+    card.className = "tool-card";
+    card.innerHTML = `
+      <strong>${escapeHtml(event.name)}</strong>
+      <p>${escapeHtml(event.summary)}</p>
+    `;
+    elements.toolEvents.append(card);
+  }
+}
+
+function renderRepoTree() {
+  elements.repoTree.innerHTML = "";
+
+  const query = state.repoFilter.trim().toLowerCase();
+  const entries = query
+    ? state.repoEntries.filter((entry) =>
+        `${entry.name} ${entry.path}`.toLowerCase().includes(query),
+      )
+    : state.repoEntries;
+
+  if (!entries.length) {
+    elements.repoTree.innerHTML = `<p class="empty-state">${
+      state.repoEntries.length ? "No matches in this folder." : "No repo entries loaded."
+    }</p>`;
+    return;
+  }
+
+  for (const entry of entries) {
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = `repo-entry ${entry.kind}`;
+    row.innerHTML = `
+      <strong>${escapeHtml(entry.name)}</strong>
+      <p>${escapeHtml(entry.path)}</p>
+    `;
+    row.addEventListener("click", () => {
+      if (entry.kind === "directory") {
+        loadRepoTree(entry.path);
+      } else {
+        loadRepoFile(entry.path);
+      }
+    });
+    elements.repoTree.append(row);
+  }
+}
+
+function renderBreadcrumbs() {
+  elements.repoBreadcrumbs.innerHTML = "";
+
+  const segments = state.currentRepoPath === "." ? [] : state.currentRepoPath.split("/");
+  const crumbs = [{ label: "root", path: "." }];
+
+  segments.reduce((current, segment) => {
+    const next = current === "." ? segment : `${current}/${segment}`;
+    crumbs.push({ label: segment, path: next });
+    return next;
+  }, ".");
+
+  for (const crumb of crumbs) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "crumb";
+    button.textContent = crumb.label;
+    button.addEventListener("click", () => loadRepoTree(crumb.path));
+    elements.repoBreadcrumbs.append(button);
+  }
+}
+
+function renderFilePreview() {
+  elements.filePreviewTitle.textContent = state.currentFile || "Select a file";
+  elements.filePreview.textContent =
+    state.filePreview ||
+    "Select a repository file to preview it here with line numbers.";
+  elements.selectedFileButton.disabled = !state.currentFile;
+}
+
+function syncControls() {
+  elements.modelSelect.value = state.model || state.meta?.defaultModel || "";
+  elements.presetSelect.value = state.preset || "coder";
+  const sendDisabled = state.sending || !state.currentSessionId;
+
+  elements.composerInput.disabled = sendDisabled;
+  elements.modelSelect.disabled = state.sending;
+  elements.newSessionButton.disabled = state.sending;
+  elements.presetSelect.disabled = state.sending;
+  elements.repoFilterInput.disabled = state.sending;
+  elements.resetSessionButton.disabled = state.sending || !state.currentSessionId;
+  elements.selectedFileButton.disabled = state.sending || !state.currentFile;
+  elements.sendButton.disabled = sendDisabled;
+  elements.sendButton.textContent = state.sending ? "Sending..." : "Send";
+  for (const button of elements.quickPromptButtons) {
+    button.disabled = state.sending;
+  }
+}
+
+function render() {
+  renderStatus();
+  renderSessionStats();
+  renderSessions();
+  renderMessages();
+  renderToolEvents();
+  renderRepoTree();
+  renderBreadcrumbs();
+  renderFilePreview();
+  syncControls();
+}
+
+async function loadMeta() {
+  state.meta = await fetchJson("/api/meta");
+  state.sessions = state.meta.sessions;
+  state.model = state.meta.defaultModel;
+  state.preset = "coder";
+
+  if (state.meta.ollamaReachable) {
+    setStatus("Workspace ready.", "success");
+  } else {
+    setStatus("Ollama is offline. Start it on http://127.0.0.1:11434 to send messages.", "error");
+  }
+
+  elements.modelSelect.innerHTML = state.meta.models
+    .map((model) => `<option value="${escapeHtml(model)}">${escapeHtml(model)}</option>`)
+    .join("");
+  elements.presetSelect.innerHTML = state.meta.presets
+    .map((preset) => `<option value="${escapeHtml(preset)}">${escapeHtml(preset)}</option>`)
+    .join("");
+}
+
+async function loadSessions() {
+  const payload = await fetchJson("/api/sessions");
+  state.sessions = payload.sessions;
+  renderSessions();
+}
+
+async function loadSession(sessionId) {
+  const payload = await fetchJson(`/api/sessions/${encodeURIComponent(sessionId)}`);
+  setSessionState(payload.session);
+  render();
+}
+
+async function createSession() {
+  const payload = await fetchJson("/api/sessions", {
+    method: "POST",
+    body: JSON.stringify({
+      model: state.model,
+      preset: state.preset,
+    }),
+  });
+
+  state.sessions = payload.sessions;
+  state.toolEvents = [];
+  setStatus("New session ready.", "success");
+  await loadSession(payload.session.sessionId);
+}
+
+async function resetSession() {
+  if (!state.currentSessionId) {
+    return;
+  }
+
+  const payload = await fetchJson(`/api/sessions/${encodeURIComponent(state.currentSessionId)}/reset`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+
+  state.sessions = payload.sessions;
+  setSessionState(payload.session);
+  state.toolEvents = [];
+  setStatus("Session reset.", "neutral");
+  render();
+}
+
+async function updateConfig() {
+  if (!state.currentSessionId) {
+    return;
+  }
+
+  const payload = await fetchJson(`/api/sessions/${encodeURIComponent(state.currentSessionId)}/config`, {
+    method: "POST",
+    body: JSON.stringify({
+      model: state.model,
+      preset: state.preset,
+      resetHistory: true,
+    }),
+  });
+
+  state.sessions = payload.sessions;
+  setSessionState(payload.session);
+  state.toolEvents = [];
+  setStatus(`Using ${state.preset} preset with ${state.model}.`, "success");
+  render();
+}
+
+async function loadRepoTree(targetPath = ".") {
+  const payload = await fetchJson(
+    `/api/repo/tree?path=${encodeURIComponent(targetPath)}&depth=1&maxEntries=120`,
+  );
+  state.currentRepoPath = payload.path;
+  state.repoEntries = payload.entries || [];
+  state.repoFilter = "";
+  elements.repoFilterInput.value = "";
+  render();
+}
+
+async function loadRepoFile(targetPath) {
+  const payload = await fetchJson(
+    `/api/repo/file?path=${encodeURIComponent(targetPath)}&start=1&end=220`,
+  );
+  state.currentFile = payload.path;
+  state.filePreview = payload.numberedLines
+    .map((line) => `${String(line.number).padStart(4, " ")}  ${line.text}`)
+    .join("\n");
+  setStatus(`Opened ${payload.path}.`, "neutral");
+  render();
+}
+
+function appendComposerText(text) {
+  const current = elements.composerInput.value.trimEnd();
+  elements.composerInput.value = current ? `${current}\n${text}` : text;
+  elements.composerInput.focus();
+}
+
+function addAssistantPlaceholder() {
+  const assistant = { role: "assistant", content: "" };
+  state.messages.push(assistant);
+  renderMessages();
+  return assistant;
+}
+
+async function streamChat(message) {
+  const userMessage = { role: "user", content: message };
+  state.messages.push(userMessage);
+  const assistant = addAssistantPlaceholder();
+  state.sending = true;
+  setStatus("Sending message...", "busy");
+  render();
+
+  try {
+    const response = await fetch("/api/chat/stream", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        message,
+        model: state.model,
+        preset: state.preset,
+        resetHistory: false,
+        sessionId: state.currentSessionId,
+      }),
+    });
+
+    if (!response.ok || !response.body) {
+      throw new Error("Chat request failed.");
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let currentEvent = "message";
+    let currentData = "";
+
+    function flushEvent() {
+      if (!currentData) {
+        return;
+      }
+
+      const payload = JSON.parse(currentData);
+
+      if (currentEvent === "session") {
+        state.currentSessionId = payload.sessionId || state.currentSessionId;
+        state.model = payload.model || state.model;
+        state.preset = payload.preset || state.preset;
+        setStatus("Generating reply...", "busy");
+      }
+
+      if (currentEvent === "token") {
+        assistant.content += payload.token;
+        renderMessages();
+      }
+
+      if (currentEvent === "tool_call") {
+        state.toolEvents.push({
+          name: payload.name,
+          summary: JSON.stringify(payload.arguments || {}),
+        });
+        setStatus(`Running ${payload.name}...`, "busy");
+        renderToolEvents();
+      }
+
+      if (currentEvent === "tool_result") {
+        state.toolEvents.push({
+          name: payload.name,
+          summary: payload.result.slice(0, 180),
+        });
+        renderToolEvents();
+      }
+
+      if (currentEvent === "done") {
+        assistant.content = payload.text || assistant.content;
+        if (payload.session) {
+          setSessionState(payload.session);
+        }
+        if (state.meta) {
+          state.meta.ollamaReachable = true;
+        }
+        setStatus("Reply complete.", "success");
+        renderMessages();
+      }
+
+      if (currentEvent === "error") {
+        throw new Error(payload.message);
+      }
+    }
+
+    while (true) {
+      const { done, value } = await reader.read();
+
+      if (done) {
+        break;
+      }
+
+      buffer += decoder.decode(value, { stream: true });
+      const chunks = buffer.split("\n");
+      buffer = chunks.pop() || "";
+
+      for (const line of chunks) {
+        if (line.startsWith("event: ")) {
+          currentEvent = line.slice(7).trim();
+          continue;
+        }
+
+        if (line.startsWith("data: ")) {
+          currentData = line.slice(6);
+          continue;
+        }
+
+        if (!line.trim()) {
+          flushEvent();
+          currentEvent = "message";
+          currentData = "";
+        }
+      }
+    }
+
+    await loadSessions();
+    await loadSession(state.currentSessionId);
+  } catch (error) {
+    assistant.content = `Error: ${error.message}`;
+
+    if (state.meta && /Could not reach Ollama/i.test(error.message)) {
+      state.meta.ollamaReachable = false;
+      setStatus("Ollama is offline. Start it on http://127.0.0.1:11434 to send messages.", "error");
+    } else {
+      setStatus(error.message, "error");
+    }
+
+    renderMessages();
+  } finally {
+    state.sending = false;
+    render();
+  }
+}
+
+async function init() {
+  await loadMeta();
+  await loadRepoTree(".");
+
+  if (!state.sessions.length) {
+    await createSession();
+  } else {
+    await loadSession(state.sessions[0].sessionId);
+  }
+
+  render();
+}
+
+elements.newSessionButton.addEventListener("click", () => {
+  createSession().catch((error) => {
+    setStatus(error.message, "error");
+    render();
+  });
+});
+
+elements.repoRootButton.addEventListener("click", () => {
+  loadRepoTree(".").catch((error) => {
+    setStatus(error.message, "error");
+    render();
+  });
+});
+
+elements.repoFilterInput.addEventListener("input", (event) => {
+  state.repoFilter = event.target.value;
+  renderRepoTree();
+});
+
+elements.clearToolsButton.addEventListener("click", () => {
+  state.toolEvents = [];
+  setStatus("Tool activity cleared.", "neutral");
+  render();
+});
+
+elements.selectedFileButton.addEventListener("click", () => {
+  if (!state.currentFile) {
+    return;
+  }
+
+  appendComposerText(`\`${state.currentFile}\``);
+  setStatus("Path added.", "neutral");
+  renderStatus();
+});
+
+elements.resetSessionButton.addEventListener("click", () => {
+  resetSession().catch((error) => {
+    setStatus(error.message, "error");
+    render();
+  });
+});
+
+elements.modelSelect.addEventListener("change", async (event) => {
+  state.model = event.target.value;
+  try {
+    await updateConfig();
+  } catch (error) {
+    setStatus(error.message, "error");
+    await loadSession(state.currentSessionId);
+  }
+});
+
+elements.presetSelect.addEventListener("change", async (event) => {
+  state.preset = event.target.value;
+  try {
+    await updateConfig();
+  } catch (error) {
+    setStatus(error.message, "error");
+    await loadSession(state.currentSessionId);
+  }
+});
+
+elements.composerForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+
+  if (state.sending) {
+    return;
+  }
+
+  const message = elements.composerInput.value.trim();
+
+  if (!message) {
+    return;
+  }
+
+  elements.composerInput.value = "";
+  await streamChat(message);
+});
+
+for (const button of elements.quickPromptButtons) {
+  button.addEventListener("click", () => {
+    const filePrompt = button.dataset.filePrompt;
+    const prompt = button.dataset.prompt;
+
+    if (filePrompt) {
+      if (!state.currentFile) {
+        setStatus("Select a file first.", "error");
+        renderStatus();
+        return;
+      }
+
+      appendComposerText(`${filePrompt} \`${state.currentFile}\``);
+      return;
+    }
+
+    appendComposerText(prompt);
+  });
+}
+
+elements.composerInput.addEventListener("keydown", (event) => {
+  if (event.key === "Enter" && !event.shiftKey) {
+    event.preventDefault();
+    elements.composerForm.requestSubmit();
+  }
+});
+
+init().catch((error) => {
+  console.error(error);
+  setStatus(`Failed to load UI: ${error.message}`, "error");
+  renderStatus();
+  elements.chatLog.innerHTML = `<p class="empty-state">Failed to load UI: ${escapeHtml(error.message)}</p>`;
+});

@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>quiet-lab</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="rail rail-left">
+        <div class="rail-header">
+          <div>
+            <p class="eyebrow">Quiet Lab</p>
+            <h1>Sessions</h1>
+          </div>
+          <button id="new-session-button" class="ghost-button">New</button>
+        </div>
+        <div id="session-list" class="session-list"></div>
+        <div class="rail-section">
+          <div class="section-header">
+            <p class="eyebrow">Repository</p>
+            <button id="repo-root-button" class="ghost-button">Root</button>
+          </div>
+          <label class="search-control">
+            <span>Filter</span>
+            <input id="repo-filter-input" type="search" placeholder="Find files" />
+          </label>
+          <div id="repo-breadcrumbs" class="breadcrumbs"></div>
+          <div id="repo-tree" class="repo-tree"></div>
+        </div>
+      </aside>
+
+      <main class="workspace">
+        <header class="workspace-header">
+          <div>
+            <p class="eyebrow">Local AI Workspace</p>
+            <h2 id="session-title">New session</h2>
+            <div id="session-stats" class="stat-strip"></div>
+          </div>
+          <div class="control-row">
+            <label class="control">
+              <span>Model</span>
+              <select id="model-select"></select>
+            </label>
+            <label class="control">
+              <span>Preset</span>
+              <select id="preset-select"></select>
+            </label>
+            <button id="reset-session-button" class="ghost-button">Reset</button>
+          </div>
+        </header>
+
+        <section id="status-banner" class="status-banner neutral" aria-live="polite">
+          <span id="status-indicator" class="status-indicator"></span>
+          <p id="status-text">Loading workspace…</p>
+        </section>
+
+        <section id="chat-log" class="chat-log"></section>
+
+        <form id="composer-form" class="composer">
+          <div class="quick-prompts" aria-label="Quick prompts">
+            <button type="button" data-prompt="Summarize this repository structure and the main entry points.">Repo summary</button>
+            <button type="button" data-file-prompt="Explain this file and call out risks:">Explain file</button>
+            <button type="button" data-prompt="Review the current app code for bugs, edge cases, and missing tests.">Find risks</button>
+            <button type="button" data-prompt="Suggest focused tests for this app.">Test ideas</button>
+          </div>
+          <textarea
+            id="composer-input"
+            rows="4"
+            placeholder="Ask about the repo, write code, or brainstorm."
+          ></textarea>
+          <div class="composer-actions">
+            <p class="hint">Shift+Enter for newline</p>
+            <button id="send-button" type="submit">Send</button>
+          </div>
+        </form>
+      </main>
+
+      <aside class="rail rail-right">
+        <div class="rail-section">
+          <div class="section-header">
+            <div>
+              <p class="eyebrow">Inspector</p>
+              <h3>Tool Activity</h3>
+            </div>
+            <button id="clear-tools-button" class="ghost-button">Clear</button>
+          </div>
+          <div id="tool-events" class="tool-events"></div>
+        </div>
+        <div class="rail-section grow">
+          <div class="section-header">
+            <div>
+              <p class="eyebrow">Preview</p>
+              <h3 id="file-preview-title">Select a file</h3>
+            </div>
+            <button id="selected-file-button" class="ghost-button">Use Path</button>
+          </div>
+          <pre id="file-preview" class="file-preview"></pre>
+        </div>
+      </aside>
+    </div>
+
+    <template id="message-template">
+      <article class="message">
+        <div class="message-meta"></div>
+        <div class="message-body"></div>
+      </article>
+    </template>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

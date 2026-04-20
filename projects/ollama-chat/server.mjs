@@ -1,0 +1,381 @@
+import { createReadStream } from "node:fs";
+import { mkdir, stat } from "node:fs/promises";
+import http from "node:http";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import {
+  ChatSession,
+  createSessionId,
+  getSessionSnapshot,
+  listAvailableModels,
+  listSessionSummaries,
+  normalizeSessionId,
+  sessionsDir,
+} from "./engine.mjs";
+import { listPresets } from "./presets.mjs";
+import {
+  hiddenPaths,
+  listRepoEntries,
+  listTools,
+  readRepoText,
+  repoRoot,
+} from "./tools.mjs";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const publicDir = path.join(__dirname, "public");
+const host = process.env.OLLAMA_CHAT_HOST || "127.0.0.1";
+const port = Number.parseInt(process.env.OLLAMA_CHAT_PORT || "4317", 10);
+const defaultModel = process.env.OLLAMA_MODEL || "llama3.2:3b";
+
+const contentTypes = {
+  ".css": "text/css; charset=utf-8",
+  ".html": "text/html; charset=utf-8",
+  ".js": "text/javascript; charset=utf-8",
+  ".json": "application/json; charset=utf-8",
+  ".svg": "image/svg+xml",
+};
+
+function sendJson(res, statusCode, payload) {
+  res.writeHead(statusCode, {
+    "Content-Type": "application/json; charset=utf-8",
+    "Cache-Control": "no-store",
+  });
+  res.end(JSON.stringify(payload));
+}
+
+function sendNotFound(res) {
+  sendJson(res, 404, { error: "Not found" });
+}
+
+function sendMethodNotAllowed(res) {
+  sendJson(res, 405, { error: "Method not allowed" });
+}
+
+function sendBadRequest(res, message) {
+  sendJson(res, 400, { error: message });
+}
+
+async function readJsonBody(req) {
+  const chunks = [];
+
+  for await (const chunk of req) {
+    chunks.push(chunk);
+  }
+
+  if (!chunks.length) {
+    return {};
+  }
+
+  return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+}
+
+function getSessionRouteParts(urlPathname) {
+  const parts = urlPathname.split("/").filter(Boolean);
+  const sessionId = decodeURIComponent(parts[2] || "");
+  const action = parts[3] || null;
+  return { action, sessionId };
+}
+
+function parseSessionId(value) {
+  return normalizeSessionId(value);
+}
+
+async function getSession(sessionId) {
+  const session = new ChatSession({ sessionId: parseSessionId(sessionId) });
+  const loaded = await session.load();
+
+  if (!loaded) {
+    await session.save();
+  }
+
+  return session;
+}
+
+function sendEvent(res, event, data) {
+  res.write(`event: ${event}\n`);
+  res.write(`data: ${JSON.stringify(data)}\n\n`);
+}
+
+async function handleMeta(_req, res) {
+  const [sessions, models] = await Promise.all([
+    listSessionSummaries(),
+    listAvailableModels(),
+  ]);
+
+  sendJson(res, 200, {
+    defaultModel,
+    hiddenPaths,
+    ollamaReachable: models.length > 0,
+    models: models.length ? models : [defaultModel],
+    presets: listPresets(),
+    repoName: path.basename(repoRoot),
+    repoRoot,
+    sessions,
+    tools: listTools()
+      .split("\n")
+      .map((line) => {
+        const [name, ...rest] = line.split(": ");
+        return { name, description: rest.join(": ") };
+      }),
+  });
+}
+
+async function handleSessions(_req, res) {
+  sendJson(res, 200, { sessions: await listSessionSummaries() });
+}
+
+async function handleCreateSession(req, res) {
+  const body = await readJsonBody(req);
+  let sessionId;
+
+  try {
+    sessionId = body.sessionId ? parseSessionId(body.sessionId) : createSessionId();
+  } catch (error) {
+    sendBadRequest(res, error.message);
+    return;
+  }
+
+  const session = new ChatSession({
+    sessionId,
+    model: body.model || defaultModel,
+    preset: body.preset || "coder",
+  });
+  await session.save();
+  sendJson(res, 201, {
+    session: session.toJSON(),
+    sessions: await listSessionSummaries(),
+  });
+}
+
+async function handleSessionById(req, res, pathname) {
+  const { action, sessionId: rawSessionId } = getSessionRouteParts(pathname);
+
+  if (!rawSessionId) {
+    sendNotFound(res);
+    return;
+  }
+
+  let sessionId;
+
+  try {
+    sessionId = parseSessionId(rawSessionId);
+  } catch (error) {
+    sendBadRequest(res, error.message);
+    return;
+  }
+
+  if (req.method === "GET" && !action) {
+    sendJson(res, 200, { session: await getSessionSnapshot(sessionId) });
+    return;
+  }
+
+  if (req.method !== "POST") {
+    sendMethodNotAllowed(res);
+    return;
+  }
+
+  const body = await readJsonBody(req);
+  const session = await getSession(sessionId);
+
+  if (action === "reset") {
+    await session.reset();
+    sendJson(res, 200, {
+      session: session.toJSON(),
+      sessions: await listSessionSummaries(),
+    });
+    return;
+  }
+
+  if (action === "config") {
+    if (body.model) {
+      await session.setModel(body.model);
+    }
+
+    if (body.preset) {
+      await session.setPreset(body.preset, { resetHistory: body.resetHistory !== false });
+    }
+
+    sendJson(res, 200, {
+      session: session.toJSON(),
+      sessions: await listSessionSummaries(),
+    });
+    return;
+  }
+
+  sendNotFound(res);
+}
+
+async function handleChatStream(req, res) {
+  const body = await readJsonBody(req);
+  let sessionId;
+
+  try {
+    sessionId = parseSessionId(body.sessionId || "latest");
+  } catch (error) {
+    sendBadRequest(res, error.message);
+    return;
+  }
+
+  const message = String(body.message || "").trim();
+
+  if (!message) {
+    sendJson(res, 400, { error: "Message is required." });
+    return;
+  }
+
+  const session = await getSession(sessionId);
+
+  if (body.model && body.model !== session.model) {
+    await session.setModel(body.model);
+  }
+
+  if (body.preset && body.preset !== session.activePreset) {
+    await session.setPreset(body.preset, { resetHistory: body.resetHistory !== false });
+  }
+
+  res.writeHead(200, {
+    "Cache-Control": "no-cache, no-transform",
+    Connection: "keep-alive",
+    "Content-Type": "text/event-stream; charset=utf-8",
+  });
+
+  sendEvent(res, "session", {
+    sessionId: session.sessionId,
+    model: session.model,
+    preset: session.activePreset,
+  });
+
+  try {
+    await session.chat(message, {
+      onToken(token) {
+        sendEvent(res, "token", { token });
+      },
+      onToolCall(call) {
+        sendEvent(res, "tool_call", {
+          name: call.function.name,
+          arguments: call.function.arguments || {},
+        });
+      },
+      onToolResult({ call, result }) {
+        sendEvent(res, "tool_result", {
+          name: call.function.name,
+          result,
+        });
+      },
+      onFinal(text) {
+        sendEvent(res, "done", {
+          text,
+          session: session.toJSON(),
+        });
+      },
+    });
+  } catch (error) {
+    sendEvent(res, "error", { message: error.message });
+  } finally {
+    res.end();
+  }
+}
+
+async function handleRepoTree(req, res, url) {
+  const result = await listRepoEntries({
+    path: url.searchParams.get("path") || ".",
+    depth: Number.parseInt(url.searchParams.get("depth") || "2", 10),
+    max_entries: Number.parseInt(url.searchParams.get("maxEntries") || "120", 10),
+  });
+
+  sendJson(res, result.status === "OK" ? 200 : 400, result);
+}
+
+async function handleRepoFile(req, res, url) {
+  const result = await readRepoText({
+    path: url.searchParams.get("path"),
+    start_line: Number.parseInt(url.searchParams.get("start") || "1", 10),
+    end_line: Number.parseInt(url.searchParams.get("end") || "220", 10),
+  });
+
+  sendJson(res, result.status === "OK" ? 200 : 400, result);
+}
+
+async function serveStatic(res, pathname) {
+  const safePath = pathname === "/" ? "/index.html" : pathname;
+  const filePath = path.join(publicDir, safePath);
+
+  if (!filePath.startsWith(publicDir)) {
+    sendNotFound(res);
+    return;
+  }
+
+  try {
+    const fileStat = await stat(filePath);
+    if (!fileStat.isFile()) {
+      sendNotFound(res);
+      return;
+    }
+
+    const ext = path.extname(filePath);
+    res.writeHead(200, {
+      "Content-Type": contentTypes[ext] || "application/octet-stream",
+      "Cache-Control": "no-store",
+    });
+    createReadStream(filePath).pipe(res);
+  } catch {
+    sendNotFound(res);
+  }
+}
+
+const server = http.createServer(async (req, res) => {
+  try {
+    const url = new URL(req.url || "/", `http://${req.headers.host || "127.0.0.1"}`);
+    const pathname = url.pathname;
+
+    if (pathname === "/api/meta" && req.method === "GET") {
+      await handleMeta(req, res);
+      return;
+    }
+
+    if (pathname === "/api/sessions" && req.method === "GET") {
+      await handleSessions(req, res);
+      return;
+    }
+
+    if (pathname === "/api/sessions" && req.method === "POST") {
+      await handleCreateSession(req, res);
+      return;
+    }
+
+    if (pathname.startsWith("/api/sessions/")) {
+      await handleSessionById(req, res, pathname);
+      return;
+    }
+
+    if (pathname === "/api/chat/stream" && req.method === "POST") {
+      await handleChatStream(req, res);
+      return;
+    }
+
+    if (pathname === "/api/repo/tree" && req.method === "GET") {
+      await handleRepoTree(req, res, url);
+      return;
+    }
+
+    if (pathname === "/api/repo/file" && req.method === "GET") {
+      await handleRepoFile(req, res, url);
+      return;
+    }
+
+    if (pathname.startsWith("/api/")) {
+      sendNotFound(res);
+      return;
+    }
+
+    await serveStatic(res, pathname);
+  } catch (error) {
+    sendJson(res, 500, { error: error.message || "Internal server error" });
+  }
+});
+
+await mkdir(sessionsDir, { recursive: true });
+
+server.listen(port, host, () => {
+  console.log(`quiet-lab UI listening on http://${host}:${port}`);
+});

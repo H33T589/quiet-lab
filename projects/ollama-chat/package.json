@@ -6,6 +6,7 @@
   "type": "module",
   "scripts": {
     "start": "node index.mjs",
-    "chat": "node index.mjs"
+    "chat": "node index.mjs",
+    "web": "node server.mjs"
   }
 }
