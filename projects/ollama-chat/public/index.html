@@ -72,7 +72,10 @@
           ></textarea>
           <div class="composer-actions">
             <p class="hint">Shift+Enter for newline</p>
-            <button id="send-button" type="submit">Send</button>
+            <div class="composer-button-row">
+              <button id="save-session-button" class="ghost-button" type="button">Save Session</button>
+              <button id="send-button" type="submit">Send</button>
+            </div>
           </div>
         </form>
       </main>
@@ -107,6 +110,43 @@
         <div class="message-body"></div>
       </article>
     </template>
+
+    <div id="save-dialog" class="dialog-backdrop" hidden>
+      <form id="save-dialog-form" class="dialog-panel" role="dialog" aria-modal="true" aria-labelledby="save-dialog-title">
+        <div class="dialog-header">
+          <div>
+            <p class="eyebrow">Archive</p>
+            <h3 id="save-dialog-title">Save Conversation</h3>
+          </div>
+          <button id="save-dialog-close" class="icon-button" type="button" aria-label="Close save dialog">×</button>
+        </div>
+        <label class="dialog-field">
+          <span>Name</span>
+          <input id="save-dialog-input" type="text" maxlength="80" autocomplete="off" />
+        </label>
+        <div class="dialog-actions">
+          <button id="save-dialog-cancel" class="ghost-button" type="button">Cancel</button>
+          <button class="primary-button" type="submit">Save</button>
+        </div>
+      </form>
+    </div>
+
+    <div id="delete-dialog" class="dialog-backdrop" hidden>
+      <div class="dialog-panel" role="dialog" aria-modal="true" aria-labelledby="delete-dialog-title">
+        <div class="dialog-header">
+          <div>
+            <p class="eyebrow danger-text">Delete</p>
+            <h3 id="delete-dialog-title">Delete Conversation</h3>
+          </div>
+          <button id="delete-dialog-close" class="icon-button" type="button" aria-label="Close delete dialog">×</button>
+        </div>
+        <p id="delete-dialog-copy" class="dialog-copy"></p>
+        <div class="dialog-actions">
+          <button id="delete-dialog-cancel" class="ghost-button" type="button">Cancel</button>
+          <button id="delete-dialog-confirm" class="danger-button" type="button">Delete</button>
+        </div>
+      </div>
+    </div>
 
     <script type="module" src="/app.js"></script>
   </body>

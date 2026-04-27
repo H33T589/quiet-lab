@@ -1,4 +1,4 @@
-import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { listPresets, resolvePreset } from "./presets.mjs";
@@ -476,6 +476,33 @@ export function normalizeSessionId(value = "latest") {
   return sessionId;
 }
 
+export function createSessionIdFromTitle(title) {
+  const slug = String(title || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/^[._-]+|[._-]+$/g, "")
+    .slice(0, 64);
+
+  return normalizeSessionId(slug || createSessionId());
+}
+
+async function createAvailableSessionId(baseSessionId) {
+  const base = normalizeSessionId(baseSessionId);
+  let candidate = base;
+
+  for (let index = 2; index < 1000; index += 1) {
+    try {
+      await readFile(path.join(sessionsDir, `${candidate}.json`), "utf8");
+      candidate = normalizeSessionId(`${base}-${index}`);
+    } catch {
+      return candidate;
+    }
+  }
+
+  throw new Error("Could not create a unique session name.");
+}
+
 export class ChatSession {
   constructor({
     sessionId = "latest",
@@ -483,6 +510,7 @@ export class ChatSession {
     preset = process.env.OLLAMA_PRESET || "coder",
     baseUrl = defaultBaseUrl,
     systemPromptOverride = null,
+    title = null,
   } = {}) {
     this.sessionId = normalizeSessionId(sessionId);
     this.baseUrl = baseUrl;
@@ -493,6 +521,7 @@ export class ChatSession {
     this.systemPrompt = buildSystemPrompt(this.basePrompt);
     this.messages = [{ role: "system", content: this.systemPrompt }];
     this.updatedAt = null;
+    this.title = title;
   }
 
   get filePath() {
@@ -502,7 +531,7 @@ export class ChatSession {
   toJSON() {
     return {
       sessionId: this.sessionId,
-      title: deriveSessionTitle(this.messages),
+      title: this.title || deriveSessionTitle(this.messages),
       model: this.model,
       baseUrl: this.baseUrl,
       preset: this.activePreset,
@@ -550,6 +579,7 @@ export class ChatSession {
         this.basePrompt;
       this.systemPrompt = buildSystemPrompt(this.basePrompt);
       this.updatedAt = saved.updatedAt || this.updatedAt;
+      this.title = saved.title || this.title;
 
       const hydrated = [...savedMessages];
       if (hydrated[0]?.role === "system") {
@@ -790,6 +820,42 @@ export async function getSessionSnapshot(sessionId) {
   }
 
   return session.toJSON();
+}
+
+export async function saveSessionAs(sourceSessionId, title) {
+  const source = new ChatSession({ sessionId: sourceSessionId });
+  const loaded = await source.load();
+
+  if (!loaded) {
+    throw new Error("Session not found.");
+  }
+
+  const cleanTitle = String(title || "").trim().replace(/\s+/g, " ");
+
+  if (!cleanTitle) {
+    throw new Error("Conversation name is required.");
+  }
+
+  const sessionId = await createAvailableSessionId(createSessionIdFromTitle(cleanTitle));
+  const saved = new ChatSession({
+    sessionId,
+    model: source.model,
+    preset: source.activePreset,
+    baseUrl: source.baseUrl,
+    title: cleanTitle,
+  });
+
+  saved.basePrompt = source.basePrompt;
+  saved.systemPrompt = source.systemPrompt;
+  saved.messages = source.messages;
+  await saved.save();
+
+  return saved.toJSON();
+}
+
+export async function deleteSession(sessionId) {
+  const normalizedSessionId = normalizeSessionId(sessionId);
+  await rm(path.join(sessionsDir, `${normalizedSessionId}.json`), { force: true });
 }
 
 export async function listAvailableModels(baseUrl = defaultBaseUrl) {

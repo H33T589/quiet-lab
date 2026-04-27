@@ -2,6 +2,7 @@ const state = {
   currentFile: null,
   currentRepoPath: ".",
   currentSessionId: null,
+  deleteSessionTarget: null,
   filePreview: null,
   messages: [],
   meta: null,
@@ -21,6 +22,11 @@ const elements = {
   clearToolsButton: document.querySelector("#clear-tools-button"),
   composerForm: document.querySelector("#composer-form"),
   composerInput: document.querySelector("#composer-input"),
+  deleteDialog: document.querySelector("#delete-dialog"),
+  deleteDialogCancel: document.querySelector("#delete-dialog-cancel"),
+  deleteDialogClose: document.querySelector("#delete-dialog-close"),
+  deleteDialogConfirm: document.querySelector("#delete-dialog-confirm"),
+  deleteDialogCopy: document.querySelector("#delete-dialog-copy"),
   filePreview: document.querySelector("#file-preview"),
   filePreviewTitle: document.querySelector("#file-preview-title"),
   messageTemplate: document.querySelector("#message-template"),
@@ -33,6 +39,12 @@ const elements = {
   repoRootButton: document.querySelector("#repo-root-button"),
   repoTree: document.querySelector("#repo-tree"),
   resetSessionButton: document.querySelector("#reset-session-button"),
+  saveDialog: document.querySelector("#save-dialog"),
+  saveDialogCancel: document.querySelector("#save-dialog-cancel"),
+  saveDialogClose: document.querySelector("#save-dialog-close"),
+  saveDialogForm: document.querySelector("#save-dialog-form"),
+  saveDialogInput: document.querySelector("#save-dialog-input"),
+  saveSessionButton: document.querySelector("#save-session-button"),
   selectedFileButton: document.querySelector("#selected-file-button"),
   sendButton: document.querySelector("#send-button"),
   sessionList: document.querySelector("#session-list"),
@@ -162,15 +174,21 @@ function renderSessions() {
   }
 
   for (const session of state.sessions) {
-    const card = document.createElement("button");
-    card.type = "button";
+    const card = document.createElement("article");
     card.className = `session-card${session.sessionId === state.currentSessionId ? " active" : ""}`;
-    card.disabled = state.sending;
     card.innerHTML = `
-      <h4>${escapeHtml(session.title || session.sessionId)}</h4>
-      <p>${escapeHtml(session.preset || "coder")} · ${escapeHtml(session.model || state.meta?.defaultModel || "")} · ${escapeHtml(formatRelativeTime(session.updatedAt))}</p>
+      <button class="session-open-button" type="button">
+        <h4>${escapeHtml(session.title || session.sessionId)}</h4>
+        <p>${escapeHtml(session.preset || "coder")} · ${escapeHtml(session.model || state.meta?.defaultModel || "")} · ${escapeHtml(formatRelativeTime(session.updatedAt))}</p>
+      </button>
+      <button class="session-delete-button" type="button" aria-label="Delete ${escapeHtml(session.title || session.sessionId)}">×</button>
     `;
-    card.addEventListener("click", () => loadSession(session.sessionId));
+    const openButton = card.querySelector(".session-open-button");
+    const deleteButton = card.querySelector(".session-delete-button");
+    openButton.disabled = state.sending;
+    deleteButton.disabled = state.sending;
+    openButton.addEventListener("click", () => loadSession(session.sessionId));
+    deleteButton.addEventListener("click", () => openDeleteDialog(session));
     elements.sessionList.append(card);
   }
 }
@@ -294,6 +312,7 @@ function syncControls() {
   elements.presetSelect.disabled = state.sending;
   elements.repoFilterInput.disabled = state.sending;
   elements.resetSessionButton.disabled = state.sending || !state.currentSessionId;
+  elements.saveSessionButton.disabled = state.sending || !state.currentSessionId || getVisibleMessages().length === 0;
   elements.selectedFileButton.disabled = state.sending || !state.currentFile;
   elements.sendButton.disabled = sendDisabled;
   elements.sendButton.textContent = state.sending ? "Sending..." : "Send";
@@ -375,6 +394,92 @@ async function resetSession() {
   setSessionState(payload.session);
   state.toolEvents = [];
   setStatus("Session reset.", "neutral");
+  render();
+}
+
+function getDefaultSaveTitle() {
+  const currentTitle = elements.sessionTitle.textContent || "";
+  return currentTitle === "New session" ? "" : currentTitle;
+}
+
+function openSaveDialog() {
+  if (!state.currentSessionId) {
+    return;
+  }
+
+  elements.saveDialogInput.value = getDefaultSaveTitle();
+  elements.saveDialog.hidden = false;
+  elements.saveDialogInput.focus();
+  elements.saveDialogInput.select();
+}
+
+function closeSaveDialog() {
+  elements.saveDialog.hidden = true;
+}
+
+async function saveConversation(title) {
+  if (!state.currentSessionId) {
+    return;
+  }
+
+  const cleanTitle = String(title || "").trim();
+
+  if (!cleanTitle) {
+    setStatus("Conversation name is required.", "error");
+    render();
+    return;
+  }
+
+  const payload = await fetchJson(`/api/sessions/${encodeURIComponent(state.currentSessionId)}/save`, {
+    method: "POST",
+    body: JSON.stringify({ title: cleanTitle }),
+  });
+
+  state.sessions = payload.sessions;
+  state.toolEvents = [];
+  setStatus(`Saved conversation as ${payload.session.title}.`, "success");
+  await loadSession(payload.session.sessionId);
+}
+
+function openDeleteDialog(session) {
+  state.deleteSessionTarget = session;
+  const title = session.title || session.sessionId;
+  elements.deleteDialogCopy.textContent = `Delete "${title}"? This removes the local saved chat file from sessions.`;
+  elements.deleteDialog.hidden = false;
+  elements.deleteDialogConfirm.focus();
+}
+
+function closeDeleteDialog() {
+  state.deleteSessionTarget = null;
+  elements.deleteDialog.hidden = true;
+}
+
+async function deleteSelectedSession() {
+  const session = state.deleteSessionTarget;
+
+  if (!session) {
+    return;
+  }
+
+  const title = session.title || session.sessionId;
+  const payload = await fetchJson(`/api/sessions/${encodeURIComponent(session.sessionId)}`, {
+    method: "DELETE",
+  });
+  state.sessions = payload.sessions;
+  setStatus(`Deleted ${title}.`, "neutral");
+  closeDeleteDialog();
+
+  if (session.sessionId === state.currentSessionId) {
+    state.toolEvents = [];
+
+    if (state.sessions.length) {
+      await loadSession(state.sessions[0].sessionId);
+    } else {
+      await createSession();
+    }
+    return;
+  }
+
   render();
 }
 
@@ -619,6 +724,53 @@ elements.selectedFileButton.addEventListener("click", () => {
 elements.resetSessionButton.addEventListener("click", () => {
   resetSession().catch((error) => {
     setStatus(error.message, "error");
+    render();
+  });
+});
+
+elements.saveSessionButton.addEventListener("click", () => {
+  openSaveDialog();
+});
+
+elements.saveDialogForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  saveConversation(elements.saveDialogInput.value)
+    .then(closeSaveDialog)
+    .catch((error) => {
+      setStatus(error.message, "error");
+      render();
+    });
+});
+
+elements.saveDialogCancel.addEventListener("click", closeSaveDialog);
+elements.saveDialogClose.addEventListener("click", closeSaveDialog);
+elements.saveDialog.addEventListener("click", (event) => {
+  if (event.target === elements.saveDialog) {
+    closeSaveDialog();
+  }
+});
+
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && !elements.saveDialog.hidden) {
+    closeSaveDialog();
+  }
+
+  if (event.key === "Escape" && !elements.deleteDialog.hidden) {
+    closeDeleteDialog();
+  }
+});
+
+elements.deleteDialogCancel.addEventListener("click", closeDeleteDialog);
+elements.deleteDialogClose.addEventListener("click", closeDeleteDialog);
+elements.deleteDialog.addEventListener("click", (event) => {
+  if (event.target === elements.deleteDialog) {
+    closeDeleteDialog();
+  }
+});
+elements.deleteDialogConfirm.addEventListener("click", () => {
+  deleteSelectedSession().catch((error) => {
+    setStatus(error.message, "error");
+    closeDeleteDialog();
     render();
   });
 });

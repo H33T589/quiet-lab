@@ -6,10 +6,12 @@ import { fileURLToPath } from "node:url";
 import {
   ChatSession,
   createSessionId,
+  deleteSession,
   getSessionSnapshot,
   listAvailableModels,
   listSessionSummaries,
   normalizeSessionId,
+  saveSessionAs,
   sessionsDir,
 } from "./engine.mjs";
 import { listPresets } from "./presets.mjs";
@@ -169,6 +171,14 @@ async function handleSessionById(req, res, pathname) {
     return;
   }
 
+  if (req.method === "DELETE" && !action) {
+    await deleteSession(sessionId);
+    sendJson(res, 200, {
+      sessions: await listSessionSummaries(),
+    });
+    return;
+  }
+
   if (req.method !== "POST") {
     sendMethodNotAllowed(res);
     return;
@@ -197,6 +207,15 @@ async function handleSessionById(req, res, pathname) {
 
     sendJson(res, 200, {
       session: session.toJSON(),
+      sessions: await listSessionSummaries(),
+    });
+    return;
+  }
+
+  if (action === "save") {
+    const savedSession = await saveSessionAs(sessionId, body.title);
+    sendJson(res, 201, {
+      session: savedSession,
       sessions: await listSessionSummaries(),
     });
     return;
