@@ -232,8 +232,11 @@ textarea {
 }
 
 .chat-log {
+  align-content: start;
+  align-items: start;
   display: grid;
   gap: 14px;
+  grid-auto-rows: max-content;
   padding: 18px 0;
 }
 
