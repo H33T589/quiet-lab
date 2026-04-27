@@ -105,6 +105,6 @@ That directory is ignored by git and is meant for local use only.
 
 ## Notes
 
-On this machine, start with `llama3.2:3b` as the default. It is the safer fit for an `M2` MacBook Pro with `8 GB` RAM.
+On memory-constrained machines, start with `llama3.2:3b` as the default.
 
 If you are using different hardware, adjust the model choice accordingly.

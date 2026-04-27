@@ -45,7 +45,7 @@ That directory is intentionally ignored by git because it contains downloaded mo
 
 ## Suggested Next Steps
 
-1. Keep your default local model small on this machine. On an `M2` with `8 GB` RAM, `llama3.2:3b` is the safer default.
+1. Keep your default local model small on memory-constrained machines. `llama3.2:3b` is a good starting point.
 2. Put reusable scripts in `projects/`.
 3. Keep prompts, install notes, and benchmark results in `notes/`.
 
