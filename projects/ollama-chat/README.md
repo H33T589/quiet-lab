@@ -73,6 +73,10 @@ The browser UI is served locally from `server.mjs` and adds:
 
 It reuses the same local repo-aware backend logic as the CLI.
 
+The web API includes `repoName` (workspace folder name) only, not your absolute repository path. Session payloads follow the same rule. The CLI `/status` command still prints the resolved path on your terminal for debugging.
+
+Run `npm test` from this directory; GitHub Actions runs these tests on pushes and pull requests to `main`.
+
 ## Presets
 
 - `coder`: concise coding help

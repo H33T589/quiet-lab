@@ -25,7 +25,7 @@ function buildSystemPrompt(prompt) {
   return [
     prompt,
     `You are operating inside the local repository "${path.basename(repoRoot)}".`,
-    `Repository root: ${repoRoot}`,
+    `Tool paths are repository-relative from the workspace root "${path.basename(repoRoot)}" — do not use absolute filesystem paths.`,
     "You have read-only tools for repository inspection.",
     "For non-repository questions, answer normally in the active preset voice and do not mention repo tools unless the user asked about the repository or you actually used them.",
     "Use tools when the user asks about files, code, structure, paths, presets, README contents, or anything repo-specific.",
@@ -508,7 +508,7 @@ export class ChatSession {
       preset: this.activePreset,
       basePrompt: this.basePrompt,
       systemPrompt: this.systemPrompt,
-      repoRoot,
+      repoName: path.basename(repoRoot),
       updatedAt: this.updatedAt,
       messages: this.messages,
     };

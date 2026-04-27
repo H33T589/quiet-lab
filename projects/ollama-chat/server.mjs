@@ -13,6 +13,7 @@ import {
   sessionsDir,
 } from "./engine.mjs";
 import { listPresets } from "./presets.mjs";
+import { resolvePublicFilePath } from "./public-static.mjs";
 import {
   hiddenPaths,
   listRepoEntries,
@@ -109,7 +110,6 @@ async function handleMeta(_req, res) {
     models: models.length ? models : [defaultModel],
     presets: listPresets(),
     repoName: path.basename(repoRoot),
-    repoRoot,
     sessions,
     tools: listTools()
       .split("\n")
@@ -297,10 +297,9 @@ async function handleRepoFile(req, res, url) {
 }
 
 async function serveStatic(res, pathname) {
-  const safePath = pathname === "/" ? "/index.html" : pathname;
-  const filePath = path.join(publicDir, safePath);
+  const filePath = resolvePublicFilePath(publicDir, pathname);
 
-  if (!filePath.startsWith(publicDir)) {
+  if (!filePath) {
     sendNotFound(res);
     return;
   }

@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { realpathSync } from "node:fs";
 import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -8,6 +9,15 @@ const execFileAsync = promisify(execFile);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 export const repoRoot = path.resolve(__dirname, "../..");
+
+const repoRootCanonical = (() => {
+  try {
+    return realpathSync(repoRoot);
+  } catch {
+    return path.normalize(repoRoot);
+  }
+})();
+
 export const hiddenPaths = [
   ".git",
   ".idea",
@@ -139,11 +149,46 @@ function isHidden(relativePath) {
   return hiddenPaths.some((prefix) => rel === prefix || rel.startsWith(`${prefix}/`));
 }
 
-function resolveRepoPath(inputPath = ".") {
+/** Ensures resolved paths cannot escape the repo via .. segments or symlink targets. */
+function assertPathWithinRepo(absPath) {
+  const normalizedAbs = path.normalize(absPath);
+
+  let canonicalTarget;
+
+  try {
+    canonicalTarget = realpathSync(normalizedAbs);
+  } catch (error) {
+    if (error?.code !== "ENOENT") {
+      throw error;
+    }
+
+    const relativeToRoot = path.relative(repoRootCanonical, normalizedAbs);
+
+    if (relativeToRoot.startsWith("..") || path.isAbsolute(relativeToRoot)) {
+      throw new Error("Path must stay inside the repository root.");
+    }
+
+    return;
+  }
+
+  const relativeToRoot = path.relative(repoRootCanonical, canonicalTarget);
+
+  if (relativeToRoot.startsWith("..") || path.isAbsolute(relativeToRoot)) {
+    throw new Error("Path must stay inside the repository root.");
+  }
+}
+
+export function resolveRepoPath(inputPath = ".") {
   const raw = String(inputPath || ".").trim();
+
+  if (raw.includes("\0")) {
+    throw new Error("Invalid path.");
+  }
+
   const repoPrefix = `${path.basename(repoRoot)}/`;
 
   if (raw === "/" || raw === repoRoot) {
+    assertPathWithinRepo(repoRoot);
     return { abs: repoRoot, rel: "." };
   }
 
@@ -151,10 +196,7 @@ function resolveRepoPath(inputPath = ".") {
 
   if (path.isAbsolute(normalizedRaw)) {
     const abs = path.resolve(normalizedRaw);
-
-    if (abs !== repoRoot && !abs.startsWith(`${repoRoot}${path.sep}`)) {
-      throw new Error("Path must stay inside the repository root.");
-    }
+    assertPathWithinRepo(abs);
 
     const rel = normalizeRelative(path.relative(repoRoot, abs));
 
@@ -166,10 +208,7 @@ function resolveRepoPath(inputPath = ".") {
   }
 
   const abs = path.resolve(repoRoot, normalizedRaw);
-
-  if (abs !== repoRoot && !abs.startsWith(`${repoRoot}${path.sep}`)) {
-    throw new Error("Path must stay inside the repository root.");
-  }
+  assertPathWithinRepo(abs);
 
   const rel = normalizeRelative(path.relative(repoRoot, abs));
 
@@ -261,7 +300,18 @@ export async function findRepoPathCandidates(input, maxResults = 5) {
 
 export async function listRepoEntries(rawArgs = {}) {
   const args = parseToolArguments(rawArgs);
-  const { abs, rel } = resolveRepoPath(args.path || ".");
+  let abs;
+  let rel;
+
+  try {
+    ({ abs, rel } = resolveRepoPath(args.path || "."));
+  } catch (error) {
+    return {
+      status: "ERROR",
+      path: ".",
+      message: error.message,
+    };
+  }
   const maxDepth = Math.min(Math.max(toInt(args.depth, 1), 0), 4);
   const maxEntries = Math.min(Math.max(toInt(args.max_entries, 60), 1), 200);
   const entries = [];
@@ -331,7 +381,18 @@ export async function listRepoEntries(rawArgs = {}) {
 
 export async function readRepoText(rawArgs = {}) {
   const args = parseToolArguments(rawArgs);
-  const { abs, rel } = resolveRepoPath(args.path);
+  let abs;
+  let rel;
+
+  try {
+    ({ abs, rel } = resolveRepoPath(args.path));
+  } catch (error) {
+    return {
+      status: "ERROR",
+      path: ".",
+      message: error.message,
+    };
+  }
   const startLine = Math.max(toInt(args.start_line, 1), 1);
   const requestedEnd = Math.max(toInt(args.end_line, startLine + 199), startLine);
   const endLine = Math.min(requestedEnd, startLine + 249);
@@ -396,7 +457,20 @@ export async function searchRepoMatches(rawArgs = {}) {
     };
   }
 
-  const { abs, rel } = resolveRepoPath(args.path || ".");
+  let abs;
+  let rel;
+
+  try {
+    ({ abs, rel } = resolveRepoPath(args.path || "."));
+  } catch (error) {
+    return {
+      status: "ERROR",
+      path: ".",
+      query,
+      message: error.message,
+    };
+  }
+
   const maxResults = Math.min(Math.max(toInt(args.max_results, 20), 1), 50);
   const targetInfo = await getTargetInfo(abs);
 
