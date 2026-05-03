@@ -56,6 +56,8 @@ function shouldUseRepoTools(userInput, preset) {
 
   return /\b(repo|repository|file|files|folder|directory|path|paths|readme|preset|presets|tool|tools|search|read|edit|codebase|source|line|lines|commit|gitignore)\b/i.test(
     userInput,
+  ) || /\b(code|site|app|project|review|bugs?|risks?|edge cases?|tests?|entry ?points?|stack|dependencies)\b/i.test(
+    userInput,
   );
 }
 
@@ -115,18 +117,9 @@ async function buildBootstrapContext(userInput) {
   const asksEntrypoints = /\b(entry ?points?|starts?|startup|main file|routes?|routing|pages?|deployment|serve|server)\b/i.test(
     userInput,
   );
-
-  if (asksBroadOverview) {
-    addToolCall("get_repo_overview", { max_entries: 100 });
-  }
-
-  if (asksDependencies) {
-    addToolCall("inspect_dependencies", {});
-  }
-
-  if (asksEntrypoints) {
-    addToolCall("find_entrypoints", {});
-  }
+  const asksReview = /\b(review|bugs?|risks?|edge cases?|missing tests?|test ideas?|site code|app code|current code)\b/i.test(
+    userInput,
+  );
 
   for (const hintedPath of hintedPaths) {
     const candidates = await findRepoPathCandidates(hintedPath);
@@ -140,6 +133,18 @@ async function buildBootstrapContext(userInput) {
     } else if (candidates.length > 1) {
       addToolCall("list_repo_files", { path: ".", depth: 2, max_entries: 80 });
     }
+  }
+
+  if (asksBroadOverview || asksReview) {
+    addToolCall("get_repo_overview", { max_entries: 100 });
+  }
+
+  if (asksDependencies || asksReview) {
+    addToolCall("inspect_dependencies", {});
+  }
+
+  if (asksEntrypoints || asksReview) {
+    addToolCall("find_entrypoints", {});
   }
 
   if (/\bpreset|presets\b/i.test(lowered) || /system prompt/i.test(lowered)) {
@@ -156,7 +161,7 @@ async function buildBootstrapContext(userInput) {
   }
 
   if (/\btool|tools\b/i.test(lowered)) {
-    addToolCall("read_repo_file", { path: "projects/ollama-chat/tools.mjs" });
+    addToolCall("get_repo_overview", { max_entries: 60 });
   }
 
   return bootstrap;
@@ -174,6 +179,24 @@ function formatBootstrapContext(results) {
     ),
     "Use this evidence directly. If it is still insufficient, call more tools. Do not contradict this evidence without stronger tool output.",
   ].join("\n\n");
+}
+
+function messagesWithBootstrapContext(messages, bootstrapContext) {
+  if (!bootstrapContext) {
+    return messages;
+  }
+
+  return [
+    ...messages,
+    {
+      role: "user",
+      content: [
+        "Attached repository evidence for my previous request:",
+        bootstrapContext,
+        "Answer my previous request using this repository evidence. Do not ask me to paste the file or provide a repository link if the evidence already contains the needed file or repo details.",
+      ].join("\n\n"),
+    },
+  ];
 }
 
 function getBootstrapResult(results, toolName, pathSuffix = null) {
@@ -314,6 +337,72 @@ function answerReadmeQuestion(userInput, bootstrapResults) {
   return null;
 }
 
+function answerPackageJsonQuestion(userInput, bootstrapResults) {
+  if (!/\bpackage(?:\.json)?\b/i.test(userInput)) {
+    return null;
+  }
+
+  const packageFile = getBootstrapResult(bootstrapResults, "read_repo_file", "package.json");
+
+  if (!packageFile || getToolField(packageFile.content, "STATUS") !== "OK") {
+    return null;
+  }
+
+  let manifest;
+
+  try {
+    manifest = JSON.parse(getReadRepoFileText(packageFile.content));
+  } catch {
+    return null;
+  }
+
+  const filePath = getToolField(packageFile.content, "PATH") || "package.json";
+  const scripts = Object.entries(manifest.scripts || {});
+  const dependencies = Object.keys(manifest.dependencies || {});
+  const devDependencies = Object.keys(manifest.devDependencies || {});
+  const allDependencyVersions = [
+    ...Object.values(manifest.dependencies || {}),
+    ...Object.values(manifest.devDependencies || {}),
+  ].filter((value) => typeof value === "string");
+  const risks = [];
+
+  if (!scripts.some(([name]) => name === "test")) {
+    risks.push("No `test` script is defined, so regressions are easy to miss unless tests run another way.");
+  }
+
+  if (!scripts.some(([name]) => name === "lint")) {
+    risks.push("No `lint` script is defined, so style and static checks are not captured in npm scripts.");
+  }
+
+  if (allDependencyVersions.some((version) => /^[~^]/.test(version))) {
+    risks.push("At least one dependency uses a range, so fresh installs may pick up newer compatible releases.");
+  }
+
+  if (!dependencies.length && !devDependencies.length) {
+    risks.push("No dependencies are declared; that is fine for a static/simple project, but build scripts must rely only on the runtime environment.");
+  }
+
+  return [
+    `I read \`${filePath}\`.`,
+    [
+      `- name: \`${manifest.name || "not set"}\``,
+      `- version: \`${manifest.version || "not set"}\``,
+      `- private: \`${manifest.private === true ? "true" : "false/not set"}\``,
+      manifest.type ? `- module type: \`${manifest.type}\`` : null,
+      scripts.length
+        ? `- scripts: ${scripts.map(([name, command]) => `\`${name}\` -> \`${command}\``).join("; ")}`
+        : "- scripts: none",
+      dependencies.length ? `- runtime dependencies: ${dependencies.map((name) => `\`${name}\``).join(", ")}` : "- runtime dependencies: none",
+      devDependencies.length ? `- dev dependencies: ${devDependencies.map((name) => `\`${name}\``).join(", ")}` : "- dev dependencies: none",
+    ]
+      .filter(Boolean)
+      .join("\n"),
+    risks.length
+      ? `Risks:\n${risks.map((risk) => `- ${risk}`).join("\n")}`
+      : "Risks:\n- I do not see obvious package-manifest risks from the fields present.",
+  ].join("\n\n");
+}
+
 function answerPromptFileQuestion(userInput, bootstrapResults) {
   if (!/what file should i edit/i.test(userInput) || !/system prompt/i.test(userInput)) {
     return null;
@@ -373,10 +462,29 @@ function answerCommitabilityQuestion(userInput, bootstrapResults) {
   return null;
 }
 
+function answerToolCapabilityQuestion(userInput) {
+  if (!/\b(what tools|which tools|tools.*access|access.*tools|how can you help)\b/i.test(userInput)) {
+    return null;
+  }
+
+  return [
+    `I can inspect the attached repository \`${getWorkspaceName()}\` through quiet-lab's read-only repo tools.`,
+    "Useful things I can do here:",
+    "- summarize the repository structure and likely stack",
+    "- find entry points, package scripts, and dependency manifests",
+    "- list folders, read selected files, and search repo text",
+    "- read several bounded file excerpts at once",
+    "- summarize imports, exports, functions, classes, routes, and CSS selectors",
+    "I cannot edit files from inside this chat yet; these tools are inspection-only.",
+  ].join("\n");
+}
+
 function answerFromBootstrap(userInput, bootstrapResults) {
   return (
+    answerToolCapabilityQuestion(userInput) ||
     answerPromptFileQuestion(userInput, bootstrapResults) ||
     answerPresetQuestion(userInput, bootstrapResults) ||
+    answerPackageJsonQuestion(userInput, bootstrapResults) ||
     answerReadmeQuestion(userInput, bootstrapResults) ||
     answerCommitabilityQuestion(userInput, bootstrapResults)
   );
@@ -443,9 +551,13 @@ async function requestAssistant({
 
   if (!stream) {
     const data = await response.json();
+    const content = data.message?.content?.trim() || "";
+    const nativeToolCalls = data.message?.tool_calls || [];
+    const contentToolCalls = nativeToolCalls.length ? [] : parseContentToolCalls(content);
+
     return {
-      content: data.message?.content?.trim() || "",
-      toolCalls: data.message?.tool_calls || [],
+      content: contentToolCalls.length ? "" : content,
+      toolCalls: nativeToolCalls.length ? nativeToolCalls : contentToolCalls,
     };
   }
 
@@ -491,6 +603,42 @@ async function requestAssistant({
   }
 
   return { content: content.trim(), toolCalls: [] };
+}
+
+function stripJsonFence(content) {
+  const trimmed = content.trim();
+  const fenced = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```/i);
+  return fenced ? fenced[1].trim() : trimmed;
+}
+
+function parseContentToolCalls(content) {
+  if (!content || !/^\s*```|^\s*[\[{]/.test(content)) {
+    return [];
+  }
+
+  let parsed;
+
+  try {
+    parsed = JSON.parse(stripJsonFence(content));
+  } catch {
+    return [];
+  }
+
+  const values = Array.isArray(parsed) ? parsed : [parsed];
+  const calls = [];
+
+  for (const value of values) {
+    const name = value?.function?.name || value?.name;
+    const args = value?.function?.arguments ?? value?.arguments ?? {};
+
+    if (typeof name !== "string" || !isToolEnabled(name)) {
+      continue;
+    }
+
+    calls.push(buildToolCall(name, args && typeof args === "object" ? args : {}));
+  }
+
+  return calls;
 }
 
 export function createSessionId() {
@@ -742,9 +890,7 @@ export class ChatSession {
       const assistant = await requestAssistant({
         baseUrl: this.baseUrl,
         model: this.model,
-        messagesForRequest: bootstrapContext
-          ? [...this.messages, { role: "system", content: bootstrapContext }]
-          : this.messages,
+        messagesForRequest: messagesWithBootstrapContext(this.messages, bootstrapContext),
         stream: false,
         includeTools: true,
       });
@@ -796,9 +942,7 @@ export class ChatSession {
       baseUrl: this.baseUrl,
       model: this.model,
       messagesForRequest: [
-        ...(bootstrapContext
-          ? [...this.messages, { role: "system", content: bootstrapContext }]
-          : this.messages),
+        ...messagesWithBootstrapContext(this.messages, bootstrapContext),
         {
           role: "system",
           content:
@@ -819,9 +963,7 @@ export class ChatSession {
     const recoveryContent = await requestRecoveryAnswer({
       baseUrl: this.baseUrl,
       model: this.model,
-      messagesForRequest: bootstrapContext
-        ? [...this.messages, { role: "system", content: bootstrapContext }]
-        : this.messages,
+      messagesForRequest: messagesWithBootstrapContext(this.messages, bootstrapContext),
     });
 
     if (recoveryContent) {

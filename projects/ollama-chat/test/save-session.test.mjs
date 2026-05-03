@@ -9,6 +9,7 @@ import {
   saveSessionAs,
   sessionsDir,
 } from "../engine.mjs";
+import { attachCodebase, repoRoot } from "../tools.mjs";
 
 const sessionIds = [
   "save-session-source-test",
@@ -83,4 +84,23 @@ test("custom preset prompts are saved into the session system prompt", async () 
   assert.equal(await loaded.load(), true);
   assert.equal(loaded.activePreset, "custom:Night Shift");
   assert.match(loaded.systemPrompt, /Answer in short operational notes/);
+});
+
+test("chat answers tool capability questions from quiet-lab tooling", async () => {
+  await attachCodebase(repoRoot, { persist: false });
+  const session = new ChatSession({ sessionId: "save-session-source-test", model: "no-network-needed" });
+  const result = await session.chat("What tools do you have access to?");
+
+  assert.match(result.text, /read-only repo tools/);
+  assert.match(result.text, /summarize the repository structure/);
+});
+
+test("chat explains package.json from attached repo evidence", async () => {
+  await attachCodebase(path.join(repoRoot, "projects/ollama-chat"), { persist: false });
+  const session = new ChatSession({ sessionId: "save-session-source-test", model: "no-network-needed" });
+  const result = await session.chat("Explain this specific file in my repository and call out risks: `package.json`");
+
+  assert.match(result.text, /I read `package\.json`/);
+  assert.match(result.text, /`test` -> `node --test test\/\*\.test\.mjs`/);
+  assert.doesNotMatch(result.text, /provide a URL|paste/i);
 });
