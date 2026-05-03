@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { realpathSync } from "node:fs";
-import { readdir, readFile, stat } from "node:fs/promises";
+import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -9,6 +10,8 @@ const execFileAsync = promisify(execFile);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 export const repoRoot = path.resolve(__dirname, "../..");
+const workspaceStatePath = path.join(__dirname, "sessions", "workspace.json");
+const maxRecentCodebases = 8;
 
 const repoRootCanonical = (() => {
   try {
@@ -17,6 +20,10 @@ const repoRootCanonical = (() => {
     return path.normalize(repoRoot);
   }
 })();
+
+let activeRepoRoot = repoRootCanonical;
+let activeRepoRootCanonical = repoRootCanonical;
+let recentCodebases = [repoRootCanonical];
 
 export const hiddenPaths = [
   ".git",
@@ -259,6 +266,132 @@ function normalizeRelative(value = ".") {
   return value.replace(/\\/g, "/").replace(/^\.\/+/, "").replace(/\/+$/, "") || ".";
 }
 
+function expandHome(inputPath) {
+  const raw = String(inputPath || "").trim();
+
+  if (raw === "~") {
+    return os.homedir();
+  }
+
+  if (raw.startsWith("~/")) {
+    return path.join(os.homedir(), raw.slice(2));
+  }
+
+  return raw;
+}
+
+function getActiveRepoRoot() {
+  return {
+    root: activeRepoRoot,
+    canonicalRoot: activeRepoRootCanonical,
+    name: path.basename(activeRepoRoot),
+  };
+}
+
+function createWorkspaceSnapshot({ includeRecent = false } = {}) {
+  const snapshot = {
+    attached: Boolean(activeRepoRoot),
+    repoName: activeRepoRoot ? path.basename(activeRepoRoot) : null,
+  };
+
+  if (includeRecent) {
+    snapshot.recentCodebases = recentCodebases;
+  }
+
+  return snapshot;
+}
+
+export function getWorkspaceSnapshot(options = {}) {
+  return createWorkspaceSnapshot(options);
+}
+
+export function getWorkspaceName() {
+  return path.basename(activeRepoRoot);
+}
+
+export function hasAttachedCodebase() {
+  return Boolean(activeRepoRoot);
+}
+
+async function saveWorkspaceState() {
+  await mkdir(path.dirname(workspaceStatePath), { recursive: true });
+  await writeFile(
+    workspaceStatePath,
+    JSON.stringify({ recentCodebases, activeCodebase: activeRepoRoot }, null, 2),
+    "utf8",
+  );
+}
+
+export async function loadWorkspaceState() {
+  try {
+    const raw = await readFile(workspaceStatePath, "utf8");
+    const saved = JSON.parse(raw);
+    recentCodebases = Array.isArray(saved.recentCodebases)
+      ? saved.recentCodebases.filter((value) => typeof value === "string")
+      : [];
+
+    const activeCodebase = typeof saved.activeCodebase === "string"
+      ? saved.activeCodebase
+      : recentCodebases[0];
+
+    if (activeCodebase) {
+      await attachCodebase(activeCodebase, { persist: false });
+      return getWorkspaceSnapshot({ includeRecent: true });
+    }
+  } catch {
+    recentCodebases = [];
+  }
+
+  activeRepoRoot = repoRootCanonical;
+  activeRepoRootCanonical = repoRootCanonical;
+  recentCodebases = [repoRootCanonical, ...recentCodebases.filter((value) => value !== repoRootCanonical)]
+    .slice(0, maxRecentCodebases);
+  return getWorkspaceSnapshot({ includeRecent: true });
+}
+
+export async function attachCodebase(inputPath, { persist = true } = {}) {
+  const raw = expandHome(inputPath);
+
+  if (!raw) {
+    throw new Error("Codebase path is required.");
+  }
+
+  if (raw.includes("\0")) {
+    throw new Error("Invalid path.");
+  }
+
+  const abs = path.resolve(raw);
+  let info;
+
+  try {
+    info = await stat(abs);
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      throw new Error("Codebase path does not exist.");
+    }
+
+    throw error;
+  }
+
+  if (!info.isDirectory()) {
+    throw new Error("Codebase path must be a directory.");
+  }
+
+  const canonical = realpathSync(abs);
+  activeRepoRoot = canonical;
+  activeRepoRootCanonical = canonical;
+  recentCodebases = [
+    canonical,
+    ...recentCodebases.filter((candidate) => candidate !== canonical),
+  ].slice(0, maxRecentCodebases);
+
+  if (persist) {
+    await saveWorkspaceState();
+  }
+
+  return getWorkspaceSnapshot({ includeRecent: true });
+}
+
 function parseToolArguments(rawArguments) {
   if (rawArguments == null) {
     return {};
@@ -281,11 +414,15 @@ function parseToolArguments(rawArguments) {
 
 function isHidden(relativePath) {
   const rel = normalizeRelative(relativePath);
-  return hiddenPaths.some((prefix) => rel === prefix || rel.startsWith(`${prefix}/`));
+  const activeName = path.basename(activeRepoRoot);
+  const extraHiddenPaths = activeName === "ollama-chat" ? ["sessions"] : [];
+  const hidden = [...hiddenPaths, ...extraHiddenPaths];
+  return hidden.some((prefix) => rel === prefix || rel.startsWith(`${prefix}/`));
 }
 
 /** Ensures resolved paths cannot escape the repo via .. segments or symlink targets. */
 function assertPathWithinRepo(absPath) {
+  const { canonicalRoot } = getActiveRepoRoot();
   const normalizedAbs = path.normalize(absPath);
 
   let canonicalTarget;
@@ -297,7 +434,7 @@ function assertPathWithinRepo(absPath) {
       throw error;
     }
 
-    const relativeToRoot = path.relative(repoRootCanonical, normalizedAbs);
+    const relativeToRoot = path.relative(canonicalRoot, normalizedAbs);
 
     if (relativeToRoot.startsWith("..") || path.isAbsolute(relativeToRoot)) {
       throw new Error("Path must stay inside the repository root.");
@@ -306,7 +443,7 @@ function assertPathWithinRepo(absPath) {
     return;
   }
 
-  const relativeToRoot = path.relative(repoRootCanonical, canonicalTarget);
+  const relativeToRoot = path.relative(canonicalRoot, canonicalTarget);
 
   if (relativeToRoot.startsWith("..") || path.isAbsolute(relativeToRoot)) {
     throw new Error("Path must stay inside the repository root.");
@@ -314,17 +451,18 @@ function assertPathWithinRepo(absPath) {
 }
 
 export function resolveRepoPath(inputPath = ".") {
+  const { root, name } = getActiveRepoRoot();
   const raw = String(inputPath || ".").trim();
 
   if (raw.includes("\0")) {
     throw new Error("Invalid path.");
   }
 
-  const repoPrefix = `${path.basename(repoRoot)}/`;
+  const repoPrefix = `${name}/`;
 
-  if (raw === "/" || raw === repoRoot) {
-    assertPathWithinRepo(repoRoot);
-    return { abs: repoRoot, rel: "." };
+  if (raw === "/" || raw === root) {
+    assertPathWithinRepo(root);
+    return { abs: root, rel: "." };
   }
 
   const normalizedRaw = raw.startsWith(repoPrefix) ? raw.slice(repoPrefix.length) : raw;
@@ -333,7 +471,7 @@ export function resolveRepoPath(inputPath = ".") {
     const abs = path.resolve(normalizedRaw);
     assertPathWithinRepo(abs);
 
-    const rel = normalizeRelative(path.relative(repoRoot, abs));
+    const rel = normalizeRelative(path.relative(root, abs));
 
     if (rel !== "." && isHidden(rel)) {
       throw new Error("That path is intentionally hidden from tools.");
@@ -342,10 +480,10 @@ export function resolveRepoPath(inputPath = ".") {
     return { abs, rel };
   }
 
-  const abs = path.resolve(repoRoot, normalizedRaw);
+  const abs = path.resolve(root, normalizedRaw);
   assertPathWithinRepo(abs);
 
-  const rel = normalizeRelative(path.relative(repoRoot, abs));
+  const rel = normalizeRelative(path.relative(root, abs));
 
   if (rel !== "." && isHidden(rel)) {
     throw new Error("That path is intentionally hidden from tools.");
@@ -380,6 +518,7 @@ async function getTargetInfo(abs) {
 }
 
 export async function findRepoPathCandidates(input, maxResults = 5) {
+  const { root } = getActiveRepoRoot();
   const raw = String(input || "").trim();
 
   if (!raw) {
@@ -408,14 +547,14 @@ export async function findRepoPathCandidates(input, maxResults = 5) {
       "!models/.ollama/**",
       "--glob",
       "!projects/ollama-chat/sessions/**",
-      repoRoot,
+      root,
     ]);
 
     const files = stdout
       .trim()
       .split("\n")
       .filter(Boolean)
-      .map((line) => line.replace(`${repoRoot}/`, ""))
+      .map((line) => line.replace(`${root}/`, ""))
       .filter((line) => !isHidden(line));
 
     const suffixMatches = files.filter(
@@ -585,6 +724,7 @@ export async function readRepoText(rawArgs = {}) {
 export async function searchRepoMatches(rawArgs = {}) {
   const args = parseToolArguments(rawArgs);
   const { limits } = getToolRuntimeConfig();
+  const { root } = getActiveRepoRoot();
   const query = String(args.query || "").trim();
 
   if (!query) {
@@ -649,7 +789,7 @@ export async function searchRepoMatches(rawArgs = {}) {
       .trim()
       .split("\n")
       .filter(Boolean)
-      .map((line) => line.replace(`${repoRoot}/`, ""))
+      .map((line) => line.replace(`${root}/`, ""))
       .slice(0, maxResults);
 
     return {

@@ -7,9 +7,9 @@ import {
   findRepoPathCandidates,
   getEnabledToolDefinitions,
   getToolRuntimeConfig,
+  getWorkspaceName,
   isToolEnabled,
   listTools,
-  repoRoot,
 } from "./tools.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -26,8 +26,8 @@ function buildSystemPrompt(prompt) {
 
   return [
     prompt,
-    `You are operating inside the local repository "${path.basename(repoRoot)}".`,
-    `Tool paths are repository-relative from the workspace root "${path.basename(repoRoot)}" — do not use absolute filesystem paths.`,
+    `You are operating inside the local repository "${getWorkspaceName()}".`,
+    `Tool paths are repository-relative from the workspace root "${getWorkspaceName()}" — do not use absolute filesystem paths.`,
     "You have read-only tools for repository inspection.",
     `Active tool mode: ${toolConfig.profile}; resource budget: ${toolConfig.budget}. Keep tool use small and ask for narrower context when evidence is insufficient.`,
     "For non-repository questions, answer normally in the active preset voice and do not mention repo tools unless the user asked about the repository or you actually used them.",
@@ -545,7 +545,7 @@ export class ChatSession {
       preset: this.activePreset,
       basePrompt: this.basePrompt,
       systemPrompt: this.systemPrompt,
-      repoName: path.basename(repoRoot),
+      repoName: getWorkspaceName(),
       updatedAt: this.updatedAt,
       messages: this.messages,
     };
@@ -618,6 +618,27 @@ export class ChatSession {
 
     this.activePreset = preset;
     this.basePrompt = prompt;
+    this.systemPrompt = buildSystemPrompt(this.basePrompt);
+
+    if (resetHistory) {
+      this.messages = [{ role: "system", content: this.systemPrompt }];
+    } else {
+      this.messages[0] = { role: "system", content: this.systemPrompt };
+    }
+
+    await this.save();
+  }
+
+  async setCustomPreset(name, prompt, { resetHistory = true } = {}) {
+    const cleanName = String(name || "custom").replace(/^custom:/, "").trim().slice(0, 48) || "custom";
+    const cleanPrompt = String(prompt || "").trim();
+
+    if (!cleanPrompt) {
+      throw new Error("Custom preset prompt is required.");
+    }
+
+    this.activePreset = `custom:${cleanName}`;
+    this.basePrompt = cleanPrompt;
     this.systemPrompt = buildSystemPrompt(this.basePrompt);
 
     if (resetHistory) {

@@ -70,3 +70,17 @@ test("deleteSession removes a saved session file", async () => {
   const deleted = new ChatSession({ sessionId: "save-session-source-test" });
   assert.equal(await deleted.load(), false);
 });
+
+test("custom preset prompts are saved into the session system prompt", async () => {
+  const session = new ChatSession({ sessionId: "save-session-source-test" });
+
+  await session.setCustomPreset("Night Shift", "Answer in short operational notes.");
+
+  assert.equal(session.activePreset, "custom:Night Shift");
+  assert.match(session.systemPrompt, /Answer in short operational notes/);
+
+  const loaded = new ChatSession({ sessionId: "save-session-source-test" });
+  assert.equal(await loaded.load(), true);
+  assert.equal(loaded.activePreset, "custom:Night Shift");
+  assert.match(loaded.systemPrompt, /Answer in short operational notes/);
+});

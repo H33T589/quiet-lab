@@ -6,11 +6,13 @@ import { fileURLToPath } from "node:url";
 import { describe, test } from "node:test";
 import { resolvePublicFilePath } from "../public-static.mjs";
 import {
+  attachCodebase,
   configureTooling,
   executeToolCall,
   getEnabledToolDefinitions,
   getToolRuntimeConfig,
   readRepoText,
+  repoRoot,
   resolveRepoPath,
 } from "../tools.mjs";
 
@@ -69,6 +71,25 @@ describe("readRepoText", () => {
       assert.match(result.message, /repository root/);
     } finally {
       rmSync(linkName);
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("workspace switching", () => {
+  test("repo paths resolve against the active attached workspace", async () => {
+    const tmp = mkdtempSync(path.join(tmpdir(), "quiet-lab-workspace-"));
+    writeFileSync(path.join(tmp, "app.txt"), "workspace file");
+
+    try {
+      await attachCodebase(tmp, { persist: false });
+      assert.equal(resolveRepoPath("app.txt").rel, "app.txt");
+      const result = await readRepoText({ path: "app.txt" });
+
+      assert.equal(result.status, "OK");
+      assert.equal(result.content, "workspace file");
+    } finally {
+      await attachCodebase(repoRoot, { persist: false });
       rmSync(tmp, { recursive: true, force: true });
     }
   });

@@ -19,8 +19,14 @@
         <div id="session-list" class="session-list"></div>
         <div class="rail-section">
           <div class="section-header">
-            <p class="eyebrow">Repository</p>
-            <button id="repo-root-button" class="ghost-button">Root</button>
+            <div>
+              <p class="eyebrow">Repository</p>
+              <h3 id="workspace-title" class="workspace-title">Loading</h3>
+            </div>
+            <div class="repo-actions">
+              <button id="switch-workspace-button" class="ghost-button" type="button">Switch</button>
+              <button id="repo-root-button" class="ghost-button" type="button">Root</button>
+            </div>
           </div>
           <div class="repo-browser-scroll">
             <label class="search-control">
@@ -50,6 +56,11 @@
               <select id="preset-select"></select>
             </label>
             <button id="reset-session-button" class="ghost-button">Reset</button>
+            <button id="control-center-button" class="icon-menu-button" type="button" aria-label="Open Control Center" aria-expanded="false">
+              <span></span>
+              <span></span>
+              <span></span>
+            </button>
           </div>
         </header>
 
@@ -104,6 +115,114 @@
           <pre id="file-preview" class="file-preview"></pre>
         </div>
       </aside>
+    </div>
+
+    <div id="control-center-backdrop" class="drawer-backdrop" hidden></div>
+    <aside id="control-center" class="control-center" aria-label="Control Center" hidden>
+      <div class="control-center-header">
+        <div>
+          <p class="eyebrow">Control Center</p>
+          <h3>Tooling & Settings</h3>
+        </div>
+        <button id="control-center-close" class="icon-button" type="button" aria-label="Close Control Center">×</button>
+      </div>
+
+      <section class="control-panel-section">
+        <div class="section-copy">
+          <h4>Workspace</h4>
+          <p>Choose the local folder repo tools should inspect.</p>
+        </div>
+        <button id="drawer-switch-workspace" class="ghost-button" type="button">Switch Repository</button>
+        <div id="recent-workspaces" class="recent-workspaces"></div>
+      </section>
+
+      <section class="control-panel-section">
+        <div class="section-copy">
+          <h4>Tool Mode</h4>
+          <p>Choose how much tool surface the local model receives.</p>
+        </div>
+        <div id="tool-profile-options" class="segmented-list"></div>
+      </section>
+
+      <section class="control-panel-section">
+        <div class="section-copy">
+          <h4>Resource Budget</h4>
+          <p>Caps tool rounds, file windows, directory size, and search results.</p>
+        </div>
+        <div id="budget-options" class="segmented-list"></div>
+      </section>
+
+      <section class="control-panel-section">
+        <div class="section-copy">
+          <h4>Enabled Tools</h4>
+          <p>Disable tools when a small model is getting distracted or slow.</p>
+        </div>
+        <div id="tool-toggle-list" class="toggle-list"></div>
+      </section>
+
+      <section class="control-panel-section">
+        <div class="section-copy">
+          <h4>Custom Presets</h4>
+          <p>Create local presets for this browser. They appear in the preset menu.</p>
+        </div>
+        <form id="custom-preset-form" class="custom-preset-form">
+          <input id="custom-preset-name" type="text" maxlength="40" placeholder="Preset name" />
+          <textarea id="custom-preset-prompt" rows="5" placeholder="System prompt"></textarea>
+          <button class="primary-button" type="submit">Add Preset</button>
+        </form>
+        <div id="custom-preset-list" class="preset-chip-list"></div>
+      </section>
+
+      <section class="control-panel-section">
+        <div class="section-copy">
+          <h4>Session Utilities</h4>
+          <p>Common actions for the active local chat.</p>
+        </div>
+        <div class="utility-grid">
+          <button id="drawer-new-session" class="ghost-button" type="button">New Session</button>
+          <button id="drawer-save-session" class="ghost-button" type="button">Save Session</button>
+          <button id="drawer-reset-session" class="ghost-button" type="button">Reset Session</button>
+          <button id="drawer-clear-tools" class="ghost-button" type="button">Clear Tools</button>
+        </div>
+      </section>
+
+      <section class="control-panel-section">
+        <div class="section-copy">
+          <h4>Privacy</h4>
+          <p>Repo tools are read-only and blocked from hidden local paths.</p>
+        </div>
+        <div id="hidden-path-list" class="tag-list"></div>
+      </section>
+
+      <section class="control-panel-section">
+        <div class="section-copy">
+          <h4>Diagnostics</h4>
+          <p>Snapshot of the current local runtime.</p>
+        </div>
+        <dl id="diagnostics-list" class="diagnostics-list"></dl>
+      </section>
+    </aside>
+
+    <div id="workspace-dialog" class="dialog-backdrop" hidden>
+      <form id="workspace-dialog-form" class="dialog-panel" role="dialog" aria-modal="true" aria-labelledby="workspace-dialog-title">
+        <div class="dialog-header">
+          <div>
+            <p class="eyebrow">Repository</p>
+            <h3 id="workspace-dialog-title">Switch Repository</h3>
+          </div>
+          <button id="workspace-dialog-close" class="icon-button" type="button" aria-label="Close repository dialog">×</button>
+        </div>
+        <label class="dialog-field">
+          <span>Folder Path</span>
+          <input id="workspace-dialog-input" type="text" autocomplete="off" placeholder="/Users/name/project" />
+        </label>
+        <button id="workspace-dialog-browse" class="ghost-button" type="button">Browse Folders</button>
+        <p class="dialog-copy">Use Browse for the native folder picker, or paste a folder path directly.</p>
+        <div class="dialog-actions">
+          <button id="workspace-dialog-cancel" class="ghost-button" type="button">Cancel</button>
+          <button class="primary-button" type="submit">Switch</button>
+        </div>
+      </form>
     </div>
 
     <template id="message-template">
