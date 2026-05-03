@@ -1,9 +1,12 @@
 import readline from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { ChatSession } from "./engine.mjs";
 import { listPresets } from "./presets.mjs";
-import { listTools, repoRoot } from "./tools.mjs";
+import { attachCodebase, getWorkspaceSnapshot, listTools } from "./tools.mjs";
 
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const args = process.argv.slice(2);
 const presetArgIndex = args.indexOf("--preset");
 const explicitPresetName = (presetArgIndex >= 0 ? args[presetArgIndex + 1] : null) ||
@@ -32,6 +35,9 @@ function printToolCall(call) {
 }
 
 async function main() {
+  const workspace = await attachCodebase(
+    process.env.OLLAMA_REPO_ROOT || path.resolve(__dirname, "../.."),
+  );
   const session = new ChatSession({
     sessionId: process.env.OLLAMA_SESSION || "latest",
     model,
@@ -52,7 +58,7 @@ async function main() {
   console.log(`Using model: ${session.model}`);
   console.log(`Ollama endpoint: ${session.baseUrl}`);
   console.log(`Preset: ${session.activePreset}`);
-  console.log(`Repo root: ${repoRoot}`);
+  console.log(`Repo: ${workspace.repoName}`);
   if (loaded) {
     console.log(`Loaded session: sessions/${session.sessionId}.json`);
   }
@@ -99,7 +105,7 @@ async function main() {
 
     if (userInput === "/status") {
       console.log(
-        `Model: ${session.model}\nPreset: ${session.activePreset}\nRepo root: ${repoRoot}\nMessages: ${Math.max(session.messages.length - 1, 0)}\nSession: sessions/${session.sessionId}.json\n`,
+        `Model: ${session.model}\nPreset: ${session.activePreset}\nRepo: ${getWorkspaceSnapshot().repoName || "none"}\nMessages: ${Math.max(session.messages.length - 1, 0)}\nSession: sessions/${session.sessionId}.json\n`,
       );
       continue;
     }

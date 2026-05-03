@@ -17,11 +17,14 @@ import {
 import { listPresets } from "./presets.mjs";
 import { resolvePublicFilePath } from "./public-static.mjs";
 import {
+  attachCodebase,
+  detachCodebase,
+  getWorkspaceSnapshot,
   hiddenPaths,
   listRepoEntries,
   listTools,
+  loadWorkspaceState,
   readRepoText,
-  repoRoot,
 } from "./tools.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -111,7 +114,7 @@ async function handleMeta(_req, res) {
     ollamaReachable: models.length > 0,
     models: models.length ? models : [defaultModel],
     presets: listPresets(),
-    repoName: path.basename(repoRoot),
+    workspace: getWorkspaceSnapshot(),
     sessions,
     tools: listTools()
       .split("\n")
@@ -120,6 +123,31 @@ async function handleMeta(_req, res) {
         return { name, description: rest.join(": ") };
       }),
   });
+}
+
+async function handleWorkspace(req, res) {
+  if (req.method === "GET") {
+    sendJson(res, 200, getWorkspaceSnapshot({ includeRecent: true }));
+    return;
+  }
+
+  if (req.method === "DELETE") {
+    sendJson(res, 200, await detachCodebase());
+    return;
+  }
+
+  if (req.method !== "POST") {
+    sendMethodNotAllowed(res);
+    return;
+  }
+
+  const body = await readJsonBody(req);
+
+  try {
+    sendJson(res, 200, await attachCodebase(body.path));
+  } catch (error) {
+    sendBadRequest(res, error.message);
+  }
 }
 
 async function handleSessions(_req, res) {
@@ -351,6 +379,11 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (pathname === "/api/workspace") {
+      await handleWorkspace(req, res);
+      return;
+    }
+
     if (pathname === "/api/sessions" && req.method === "GET") {
       await handleSessions(req, res);
       return;
@@ -393,6 +426,7 @@ const server = http.createServer(async (req, res) => {
 });
 
 await mkdir(sessionsDir, { recursive: true });
+await loadWorkspaceState();
 
 server.listen(port, host, () => {
   console.log(`quiet-lab UI listening on http://${host}:${port}`);

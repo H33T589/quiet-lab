@@ -1,4 +1,5 @@
 :root {
+  --desktop-ui-scale: 0.67;
   --bg: #0c1117;
   --panel: rgba(16, 25, 35, 0.84);
   --panel-strong: rgba(19, 31, 43, 0.92);
@@ -54,6 +55,15 @@ select {
   padding: 18px;
 }
 
+@media (min-width: 1181px) {
+  .app-shell {
+    height: calc(100dvh / var(--desktop-ui-scale));
+    transform: scale(var(--desktop-ui-scale));
+    transform-origin: top left;
+    width: calc(100dvw / var(--desktop-ui-scale));
+  }
+}
+
 .rail,
 .workspace {
   background: var(--panel);
@@ -92,6 +102,26 @@ select {
   border-top: 1px solid var(--line);
   margin-top: 18px;
   padding-top: 18px;
+}
+
+.workspace-title {
+  color: var(--muted);
+  font: 0.9rem/1.2 var(--mono);
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.repo-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.repo-actions .ghost-button {
+  padding: 8px 10px;
 }
 
 .rail-left .session-list {
@@ -501,6 +531,21 @@ textarea {
   overflow: visible;
 }
 
+.repo-empty-state {
+  align-items: start;
+  border: 1px dashed rgba(125, 226, 209, 0.22);
+  border-radius: 8px;
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+}
+
+.repo-empty-state p {
+  color: var(--muted);
+  line-height: 1.5;
+  margin: 0;
+}
+
 .repo-entry {
   padding: 10px 12px;
   cursor: pointer;
@@ -621,6 +666,38 @@ textarea {
   font: 600 0.74rem/1.2 var(--mono);
   letter-spacing: 0.06em;
   text-transform: uppercase;
+}
+
+.dialog-label {
+  color: var(--muted);
+  font: 600 0.74rem/1.2 var(--mono);
+  letter-spacing: 0.06em;
+  margin: 0 0 8px;
+  text-transform: uppercase;
+}
+
+.recent-codebase-list {
+  display: grid;
+  gap: 8px;
+  max-height: 180px;
+  overflow: auto;
+}
+
+.recent-codebase {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--text);
+  cursor: pointer;
+  font: 0.78rem/1.4 var(--mono);
+  overflow-wrap: anywhere;
+  padding: 10px 12px;
+  text-align: left;
+}
+
+.recent-codebase:hover {
+  border-color: rgba(125, 226, 209, 0.42);
+  background: rgba(125, 226, 209, 0.08);
 }
 
 .dialog-copy {

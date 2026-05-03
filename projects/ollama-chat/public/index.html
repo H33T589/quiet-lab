@@ -19,8 +19,14 @@
         <div id="session-list" class="session-list"></div>
         <div class="rail-section">
           <div class="section-header">
-            <p class="eyebrow">Repository</p>
-            <button id="repo-root-button" class="ghost-button">Root</button>
+            <div>
+              <p class="eyebrow">Repository</p>
+              <h3 id="workspace-title" class="workspace-title">No codebase</h3>
+            </div>
+            <div class="repo-actions">
+              <button id="attach-codebase-button" class="ghost-button" type="button">Attach Codebase</button>
+              <button id="repo-root-button" class="ghost-button" type="button">Root</button>
+            </div>
           </div>
           <div class="repo-browser-scroll">
             <label class="search-control">
@@ -148,6 +154,27 @@
           <button id="delete-dialog-confirm" class="danger-button" type="button">Delete</button>
         </div>
       </div>
+    </div>
+
+    <div id="attach-dialog" class="dialog-backdrop" hidden>
+      <form id="attach-dialog-form" class="dialog-panel" role="dialog" aria-modal="true" aria-labelledby="attach-dialog-title">
+        <div class="dialog-header">
+          <div>
+            <p class="eyebrow">Codebase</p>
+            <h3 id="attach-dialog-title">Attach Codebase</h3>
+          </div>
+          <button id="attach-dialog-close" class="icon-button" type="button" aria-label="Close attach dialog">×</button>
+        </div>
+        <label class="dialog-field">
+          <span>Folder Path</span>
+          <input id="attach-dialog-input" type="text" autocomplete="off" placeholder="/Users/name/project" />
+        </label>
+        <div id="recent-codebases" class="recent-codebases"></div>
+        <div class="dialog-actions">
+          <button id="attach-dialog-cancel" class="ghost-button" type="button">Cancel</button>
+          <button class="primary-button" type="submit">Attach</button>
+        </div>
+      </form>
     </div>
 
     <script type="module" src="/app.js"></script>

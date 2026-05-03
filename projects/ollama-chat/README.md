@@ -68,12 +68,13 @@ The browser UI is served locally from `server.mjs` and adds:
 - model and preset controls
 - streamed chat panel
 - tool activity inspector
-- repo tree and file preview
+- attach-codebase flow for selecting a local folder from the UI
+- repo tree and file preview for the attached codebase
 - repo filtering, quick prompts, and selected-file prompt helpers
 
 It reuses the same local repo-aware backend logic as the CLI.
 
-The web API includes `repoName` (workspace folder name) only, not your absolute repository path. Session payloads follow the same rule. The CLI `/status` command still prints the resolved path on your terminal for debugging.
+On first launch, attach a codebase from the Repository panel by pasting a local folder path. Recent codebases are remembered locally for reuse. The web API includes the active `repoName` (workspace folder name) in session payloads, not the absolute repository path. Recent-codebase paths are exposed only through the local workspace endpoint used by the attach dialog.
 
 Run `npm test` from this directory; GitHub Actions runs these tests on pushes and pull requests to `main`.
 
@@ -87,13 +88,18 @@ Run `npm test` from this directory; GitHub Actions runs these tests on pushes an
 
 ## Repo Tools
 
-The model can use a small set of read-only tools inside this repository:
+The model can use a small set of read-only tools inside the attached codebase:
 
+- `get_repo_overview`
+- `find_entrypoints`
+- `inspect_dependencies`
 - `list_repo_files`
+- `read_many_files`
 - `read_repo_file`
 - `search_repo`
+- `summarize_file_symbols`
 
-These tools are intentionally limited to the repository root. They do not write files, run shell commands, or access hidden local model data under `models/.ollama/`.
+These tools are intentionally limited to the attached repository root. They do not write files, run shell commands, or access hidden folders such as `.git`, `.vscode`, `.idea`, `node_modules`, and common generated output directories.
 
 For repo questions, the CLI now hides the model's pre-tool chatter and only shows explicit tool calls plus the grounded answer. This reduces fake shell-style narration and makes wrong inferences easier to spot.
 

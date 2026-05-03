@@ -15,9 +15,20 @@ const state = {
   statusText: "Loading workspace...",
   statusTone: "neutral",
   toolEvents: [],
+  workspace: {
+    attached: false,
+    recentCodebases: [],
+    repoName: null,
+  },
 };
 
 const elements = {
+  attachCodebaseButton: document.querySelector("#attach-codebase-button"),
+  attachDialog: document.querySelector("#attach-dialog"),
+  attachDialogCancel: document.querySelector("#attach-dialog-cancel"),
+  attachDialogClose: document.querySelector("#attach-dialog-close"),
+  attachDialogForm: document.querySelector("#attach-dialog-form"),
+  attachDialogInput: document.querySelector("#attach-dialog-input"),
   chatLog: document.querySelector("#chat-log"),
   clearToolsButton: document.querySelector("#clear-tools-button"),
   composerForm: document.querySelector("#composer-form"),
@@ -38,6 +49,7 @@ const elements = {
   repoFilterInput: document.querySelector("#repo-filter-input"),
   repoRootButton: document.querySelector("#repo-root-button"),
   repoTree: document.querySelector("#repo-tree"),
+  recentCodebases: document.querySelector("#recent-codebases"),
   resetSessionButton: document.querySelector("#reset-session-button"),
   saveDialog: document.querySelector("#save-dialog"),
   saveDialogCancel: document.querySelector("#save-dialog-cancel"),
@@ -53,6 +65,7 @@ const elements = {
   statusBanner: document.querySelector("#status-banner"),
   statusText: document.querySelector("#status-text"),
   toolEvents: document.querySelector("#tool-events"),
+  workspaceTitle: document.querySelector("#workspace-title"),
 };
 
 function escapeHtml(value) {
@@ -238,6 +251,17 @@ function renderToolEvents() {
 function renderRepoTree() {
   elements.repoTree.innerHTML = "";
 
+  if (!state.workspace.attached) {
+    elements.repoTree.innerHTML = `
+      <div class="repo-empty-state">
+        <p>No codebase attached.</p>
+        <button class="primary-button" type="button" data-open-attach>Attach Codebase</button>
+      </div>
+    `;
+    elements.repoTree.querySelector("[data-open-attach]")?.addEventListener("click", openAttachDialog);
+    return;
+  }
+
   const query = state.repoFilter.trim().toLowerCase();
   const entries = query
     ? state.repoEntries.filter((entry) =>
@@ -274,6 +298,10 @@ function renderRepoTree() {
 function renderBreadcrumbs() {
   elements.repoBreadcrumbs.innerHTML = "";
 
+  if (!state.workspace.attached) {
+    return;
+  }
+
   const segments = state.currentRepoPath === "." ? [] : state.currentRepoPath.split("/");
   const crumbs = [{ label: "root", path: "." }];
 
@@ -297,8 +325,19 @@ function renderFilePreview() {
   elements.filePreviewTitle.textContent = state.currentFile || "Select a file";
   elements.filePreview.textContent =
     state.filePreview ||
-    "Select a repository file to preview it here with line numbers.";
+    (state.workspace.attached
+      ? "Select a repository file to preview it here with line numbers."
+      : "Attach a codebase to preview files here.");
   elements.selectedFileButton.disabled = !state.currentFile;
+}
+
+function renderWorkspace() {
+  elements.workspaceTitle.textContent = state.workspace.attached
+    ? state.workspace.repoName
+    : "No codebase";
+  elements.attachCodebaseButton.textContent = state.workspace.attached
+    ? "Switch Codebase"
+    : "Attach Codebase";
 }
 
 function syncControls() {
@@ -310,7 +349,8 @@ function syncControls() {
   elements.modelSelect.disabled = state.sending;
   elements.newSessionButton.disabled = state.sending;
   elements.presetSelect.disabled = state.sending;
-  elements.repoFilterInput.disabled = state.sending;
+  elements.repoFilterInput.disabled = state.sending || !state.workspace.attached;
+  elements.repoRootButton.disabled = state.sending || !state.workspace.attached;
   elements.resetSessionButton.disabled = state.sending || !state.currentSessionId;
   elements.saveSessionButton.disabled = state.sending || !state.currentSessionId || getVisibleMessages().length === 0;
   elements.selectedFileButton.disabled = state.sending || !state.currentFile;
@@ -322,6 +362,7 @@ function syncControls() {
 }
 
 function render() {
+  renderWorkspace();
   renderStatus();
   renderSessionStats();
   renderSessions();
@@ -333,11 +374,45 @@ function render() {
   syncControls();
 }
 
+function renderRecentCodebases() {
+  const recent = state.workspace.recentCodebases || [];
+
+  if (!recent.length) {
+    elements.recentCodebases.innerHTML = "";
+    return;
+  }
+
+  elements.recentCodebases.innerHTML = `
+    <p class="dialog-label">Recent</p>
+    <div class="recent-codebase-list"></div>
+  `;
+  const list = elements.recentCodebases.querySelector(".recent-codebase-list");
+
+  for (const recentPath of recent) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "recent-codebase";
+    button.textContent = recentPath;
+    button.addEventListener("click", () => {
+      elements.attachDialogInput.value = recentPath;
+      attachSelectedCodebase(recentPath).catch((error) => {
+        setStatus(error.message, "error");
+        render();
+      });
+    });
+    list.append(button);
+  }
+}
+
 async function loadMeta() {
   state.meta = await fetchJson("/api/meta");
   state.sessions = state.meta.sessions;
   state.model = state.meta.defaultModel;
   state.preset = "coder";
+  state.workspace = {
+    ...state.workspace,
+    ...(state.meta.workspace || {}),
+  };
 
   if (state.meta.ollamaReachable) {
     setStatus("Workspace ready.", "success");
@@ -351,6 +426,10 @@ async function loadMeta() {
   elements.presetSelect.innerHTML = state.meta.presets
     .map((preset) => `<option value="${escapeHtml(preset)}">${escapeHtml(preset)}</option>`)
     .join("");
+}
+
+async function loadWorkspace() {
+  state.workspace = await fetchJson("/api/workspace");
 }
 
 async function loadSessions() {
@@ -378,6 +457,38 @@ async function createSession() {
   state.toolEvents = [];
   setStatus("New session ready.", "success");
   await loadSession(payload.session.sessionId);
+}
+
+function openAttachDialog() {
+  elements.attachDialogInput.value = "";
+  renderRecentCodebases();
+  elements.attachDialog.hidden = false;
+  elements.attachDialogInput.focus();
+}
+
+function closeAttachDialog() {
+  elements.attachDialog.hidden = true;
+}
+
+async function attachSelectedCodebase(inputPath) {
+  const payload = await fetchJson("/api/workspace", {
+    method: "POST",
+    body: JSON.stringify({ path: inputPath }),
+  });
+
+  state.workspace = payload;
+  state.currentFile = null;
+  state.filePreview = null;
+  state.repoEntries = [];
+  state.repoFilter = "";
+  state.currentRepoPath = ".";
+  state.toolEvents = [];
+  elements.repoFilterInput.value = "";
+  await createSession();
+  await loadRepoTree(".");
+  closeAttachDialog();
+  setStatus(`Attached ${payload.repoName}.`, "success");
+  render();
 }
 
 async function resetSession() {
@@ -505,6 +616,13 @@ async function updateConfig() {
 }
 
 async function loadRepoTree(targetPath = ".") {
+  if (!state.workspace.attached) {
+    state.repoEntries = [];
+    state.currentRepoPath = ".";
+    render();
+    return;
+  }
+
   const payload = await fetchJson(
     `/api/repo/tree?path=${encodeURIComponent(targetPath)}&depth=1&maxEntries=120`,
   );
@@ -516,6 +634,12 @@ async function loadRepoTree(targetPath = ".") {
 }
 
 async function loadRepoFile(targetPath) {
+  if (!state.workspace.attached) {
+    setStatus("Attach a codebase first.", "error");
+    render();
+    return;
+  }
+
   const payload = await fetchJson(
     `/api/repo/file?path=${encodeURIComponent(targetPath)}&start=1&end=220`,
   );
@@ -675,12 +799,16 @@ async function streamChat(message) {
 
 async function init() {
   await loadMeta();
-  await loadRepoTree(".");
+  await loadWorkspace();
 
   if (!state.sessions.length) {
     await createSession();
   } else {
     await loadSession(state.sessions[0].sessionId);
+  }
+
+  if (state.workspace.attached) {
+    await loadRepoTree(".");
   }
 
   render();
@@ -693,11 +821,29 @@ elements.newSessionButton.addEventListener("click", () => {
   });
 });
 
+elements.attachCodebaseButton.addEventListener("click", openAttachDialog);
+
 elements.repoRootButton.addEventListener("click", () => {
   loadRepoTree(".").catch((error) => {
     setStatus(error.message, "error");
     render();
   });
+});
+
+elements.attachDialogForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  attachSelectedCodebase(elements.attachDialogInput.value).catch((error) => {
+    setStatus(error.message, "error");
+    render();
+  });
+});
+
+elements.attachDialogCancel.addEventListener("click", closeAttachDialog);
+elements.attachDialogClose.addEventListener("click", closeAttachDialog);
+elements.attachDialog.addEventListener("click", (event) => {
+  if (event.target === elements.attachDialog) {
+    closeAttachDialog();
+  }
 });
 
 elements.repoFilterInput.addEventListener("input", (event) => {
@@ -757,6 +903,10 @@ document.addEventListener("keydown", (event) => {
 
   if (event.key === "Escape" && !elements.deleteDialog.hidden) {
     closeDeleteDialog();
+  }
+
+  if (event.key === "Escape" && !elements.attachDialog.hidden) {
+    closeAttachDialog();
   }
 });
 

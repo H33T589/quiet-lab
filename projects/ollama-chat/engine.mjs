@@ -5,8 +5,9 @@ import { listPresets, resolvePreset } from "./presets.mjs";
 import {
   executeToolCall,
   findRepoPathCandidates,
+  getWorkspaceName,
+  hasAttachedCodebase,
   listTools,
-  repoRoot,
   toolDefinitions,
 } from "./tools.mjs";
 
@@ -22,13 +23,28 @@ function createBasePrompt(preset, systemPromptOverride = null) {
 }
 
 function buildSystemPrompt(prompt) {
+  const repoName = getWorkspaceName();
+  const workspaceLines = hasAttachedCodebase()
+    ? [
+        `You are operating inside the local repository "${repoName}".`,
+        `Tool paths are repository-relative from the workspace root "${repoName}" — do not use absolute filesystem paths.`,
+        "You have read-only tools for repository inspection.",
+      ]
+    : [
+        "No codebase is attached yet.",
+        "For repository or codebase questions, tell the user to attach a codebase first.",
+      ];
+
   return [
     prompt,
-    `You are operating inside the local repository "${path.basename(repoRoot)}".`,
-    `Tool paths are repository-relative from the workspace root "${path.basename(repoRoot)}" — do not use absolute filesystem paths.`,
-    "You have read-only tools for repository inspection.",
+    ...workspaceLines,
     "For non-repository questions, answer normally in the active preset voice and do not mention repo tools unless the user asked about the repository or you actually used them.",
     "Use tools when the user asks about files, code, structure, paths, presets, README contents, or anything repo-specific.",
+    "Use get_repo_overview first for broad questions about what the project is, how it works, architecture, stack, entry points, or repo summaries.",
+    "Use inspect_dependencies for framework, package script, dependency, build, and tooling questions.",
+    "Use find_entrypoints for app flow, routing, startup, deployment, or entry point questions.",
+    "Use read_many_files when an answer needs context from several known files.",
+    "Use summarize_file_symbols before explaining a source file's structure when the user asks about functions, components, routes, classes, CSS selectors, or exports.",
     "Prefer list_repo_files for directory structure, read_repo_file for specific files, and search_repo only when you need to locate unknown text or symbols.",
     "Do not use search_repo as a substitute for opening a known file.",
     "Never claim to have inspected code unless you actually used a tool.",
@@ -53,7 +69,7 @@ function shouldUseRepoTools(userInput, preset) {
 function extractPathLikeHints(userInput) {
   const matches = new Set();
   const regex =
-    /(?:^|[\s"'`(])((?:[A-Za-z0-9._-]+\/)+[A-Za-z0-9._-]+|\.gitignore|README\.md|[A-Za-z0-9._-]+\.(?:md|mjs|js|json|ts|tsx|jsx|yml|yaml|txt))(?=$|[\s"'`),.:;!?])/g;
+    /(?:^|[\s"'`(])((?:[A-Za-z0-9._-]+\/)+[A-Za-z0-9._-]+|\.gitignore|README\.md|[A-Za-z0-9._-]+\.(?:css|html|md|mjs|js|json|ts|tsx|jsx|yml|yaml|txt))(?=$|[\s"'`),.:;!?])/g;
 
   for (const match of userInput.matchAll(regex)) {
     const value = match[1]?.trim();
@@ -92,32 +108,56 @@ async function buildBootstrapContext(userInput) {
   }
 
   const hintedPaths = extractPathLikeHints(userInput);
+  const asksBroadOverview = /\b(what is|what's|explain|summarize|overview|how it works|how does it work|architecture|structure|codebase|project|site|app|entry point|entrypoint|main files?)\b/i.test(
+    userInput,
+  );
+  const asksDependencies = /\b(dependencies|package|packages|framework|stack|library|libraries|build|scripts?|devdependencies|npm|pnpm|yarn|vite|next|react|astro)\b/i.test(
+    userInput,
+  );
+  const asksEntrypoints = /\b(entry ?points?|starts?|startup|main file|routes?|routing|pages?|deployment|serve|server)\b/i.test(
+    userInput,
+  );
+
+  if (asksBroadOverview) {
+    addToolCall("get_repo_overview", { max_entries: 100 });
+  }
+
+  if (asksDependencies) {
+    addToolCall("inspect_dependencies", {});
+  }
+
+  if (asksEntrypoints) {
+    addToolCall("find_entrypoints", {});
+  }
 
   for (const hintedPath of hintedPaths) {
     const candidates = await findRepoPathCandidates(hintedPath);
 
     if (candidates.length === 1) {
-      addToolCall("read_repo_file", { path: candidates[0] });
+      if (/\b(symbols?|functions?|components?|classes?|exports?|selectors?|routes?)\b/i.test(lowered)) {
+        addToolCall("summarize_file_symbols", { path: candidates[0] });
+      } else {
+        addToolCall("read_repo_file", { path: candidates[0] });
+      }
     } else if (candidates.length > 1) {
       addToolCall("list_repo_files", { path: ".", depth: 2, max_entries: 80 });
     }
   }
 
   if (/\bpreset|presets\b/i.test(lowered) || /system prompt/i.test(lowered)) {
-    addToolCall("read_repo_file", { path: "projects/ollama-chat/presets.mjs" });
+    const candidates = await findRepoPathCandidates("presets.mjs");
+
+    if (candidates.length === 1) {
+      addToolCall("read_repo_file", { path: candidates[0] });
+    }
   }
 
   if (/\breadme\b/i.test(lowered)) {
-    addToolCall("read_repo_file", { path: "projects/ollama-chat/README.md" });
+    addToolCall("read_repo_file", { path: "README.md" });
   }
 
   if (/\bcommit|committed|gitignore|ignored\b/i.test(lowered)) {
     addToolCall("read_repo_file", { path: ".gitignore" });
-    addToolCall("read_repo_file", { path: "projects/ollama-chat/README.md" });
-  }
-
-  if (/\btool|tools\b/i.test(lowered)) {
-    addToolCall("read_repo_file", { path: "projects/ollama-chat/tools.mjs" });
   }
 
   return bootstrap;
@@ -164,7 +204,25 @@ function getToolBlock(content, field) {
     return "";
   }
 
-  return content.slice(index + marker.length).trim();
+  const rest = content.slice(index + marker.length);
+  const nextFieldMatch = rest.match(/\n[A-Z_]+:/);
+  const block = nextFieldMatch ? rest.slice(0, nextFieldMatch.index) : rest;
+
+  return block.trim();
+}
+
+function getToolList(content, field) {
+  const block = getToolBlock(content, field);
+
+  if (!block || block === "(none)") {
+    return [];
+  }
+
+  return block
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .filter((line) => !/^[A-Z_]+:/.test(line));
 }
 
 function getReadRepoFileText(content) {
@@ -334,8 +392,88 @@ function answerCommitabilityQuestion(userInput, bootstrapResults) {
   return null;
 }
 
+function answerOverviewQuestion(userInput, bootstrapResults) {
+  if (!/\b(what is|what's|explain|summarize|overview|how it works|how does it work|architecture|structure|codebase|project|site|app|entry point|entrypoint|main files?)\b/i.test(userInput)) {
+    return null;
+  }
+
+  const overview = getBootstrapResult(bootstrapResults, "get_repo_overview");
+
+  if (!overview || getToolField(overview.content, "STATUS") !== "OK") {
+    return null;
+  }
+
+  const repo = getToolField(overview.content, "REPO") || "this repository";
+  const stack = getToolField(overview.content, "STACK") || "(unknown)";
+  const topLevel = getToolList(overview.content, "TOP_LEVEL").slice(0, 10);
+  const scripts = getToolList(overview.content, "PACKAGE_SCRIPTS").slice(0, 8);
+  const entrypoints = getToolList(overview.content, "ENTRYPOINTS").slice(0, 10);
+  const importantFiles = getToolList(overview.content, "IMPORTANT_FILES").slice(0, 10);
+
+  return [
+    `\`${repo}\` looks like a ${stack === "(unknown)" ? "local codebase" : stack} project based on the attached repository files.`,
+    topLevel.length ? `Top-level structure:\n${topLevel.map((item) => `- \`${item}\``).join("\n")}` : null,
+    entrypoints.length ? `Likely entry points and config:\n${entrypoints.map((item) => `- \`${item}\``).join("\n")}` : null,
+    scripts.length ? `Package scripts:\n${scripts.map((item) => `- \`${item}\``).join("\n")}` : null,
+    importantFiles.length ? `Files worth reading next:\n${importantFiles.map((item) => `- \`${item}\``).join("\n")}` : null,
+    "This is a deterministic summary from repo tools because the local model did not produce a final answer reliably.",
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+function answerFileExplanationQuestion(userInput, bootstrapResults) {
+  if (!/\b(explain|summarize|review|risk|risks|what does|how does)\b/i.test(userInput)) {
+    return null;
+  }
+
+  const file = bootstrapResults.find(
+    (result) => result.name === "read_repo_file" && getToolField(result.content, "STATUS") === "OK",
+  );
+
+  if (!file) {
+    return null;
+  }
+
+  const filePath = getToolField(file.content, "PATH") || "the selected file";
+  const lineRange = getToolField(file.content, "LINE_RANGE");
+  const text = getReadRepoFileText(file.content);
+  const hasHtml = /<!doctype html|<html|<head|<body/i.test(text);
+  const hasScripts = /<script/i.test(text);
+  const hasExternalAssets = /https?:\/\//i.test(text);
+  const title = text.match(/<title>(.*?)<\/title>/i)?.[1]?.trim();
+  const description = text.match(/name=["']description["'][^>]*content=["']([^"']+)/i)?.[1]?.trim();
+  const risks = [];
+
+  if (hasExternalAssets) {
+    risks.push("External assets or services are referenced, so availability/privacy/performance depends partly on third parties.");
+  }
+
+  if (hasScripts) {
+    risks.push("Scripts are loaded by this file; review those linked files for runtime behavior and security-sensitive logic.");
+  }
+
+  if (!/content-security-policy/i.test(text) && hasScripts) {
+    risks.push("No obvious Content Security Policy appears in this excerpt.");
+  }
+
+  return [
+    `\`${filePath}\`${lineRange ? ` (${lineRange})` : ""} is ${hasHtml ? "an HTML entry document" : "a repository file"}${title ? ` for "${title}"` : ""}.`,
+    description ? `Page description: ${description}` : null,
+    hasHtml
+      ? "How it works: the browser loads this document first, reads metadata in `<head>`, then loads linked styles/scripts/assets to render and run the page."
+      : "How it works: this file contributes source/config/content that should be read with nearby entry points for full behavior.",
+    risks.length ? `Risks to check:\n${risks.map((risk) => `- ${risk}`).join("\n")}` : "No specific risks were obvious from the bounded excerpt, but this is not a full security review.",
+    "This is a deterministic explanation from repo tools because the local model did not produce a final answer reliably.",
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+}
+
 function answerFromBootstrap(userInput, bootstrapResults) {
   return (
+    answerFileExplanationQuestion(userInput, bootstrapResults) ||
+    answerOverviewQuestion(userInput, bootstrapResults) ||
     answerPromptFileQuestion(userInput, bootstrapResults) ||
     answerPresetQuestion(userInput, bootstrapResults) ||
     answerReadmeQuestion(userInput, bootstrapResults) ||
@@ -537,7 +675,7 @@ export class ChatSession {
       preset: this.activePreset,
       basePrompt: this.basePrompt,
       systemPrompt: this.systemPrompt,
-      repoName: path.basename(repoRoot),
+      repoName: hasAttachedCodebase() ? getWorkspaceName() : null,
       updatedAt: this.updatedAt,
       messages: this.messages,
     };
@@ -651,6 +789,14 @@ export class ChatSession {
       await this.save();
       onFinal(assistant.content);
       return { text: assistant.content, toolEvents: [] };
+    }
+
+    if (!hasAttachedCodebase()) {
+      const text = "No codebase is attached yet. Attach a codebase first, then ask your repo question again.";
+      this.messages.push({ role: "assistant", content: text });
+      await this.save();
+      onFinal(text);
+      return { text, toolEvents: [] };
     }
 
     const bootstrapCalls = await buildBootstrapContext(userInput);
