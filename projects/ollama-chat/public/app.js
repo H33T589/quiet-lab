@@ -14,6 +14,14 @@ const state = {
   sending: false,
   statusText: "Loading workspace...",
   statusTone: "neutral",
+  controlCenterOpen: false,
+  customPresets: [],
+  tooling: {
+    budgets: {},
+    config: null,
+    profiles: {},
+    tools: [],
+  },
   toolEvents: [],
   workspace: {
     attached: false,
@@ -23,16 +31,19 @@ const state = {
 };
 
 const elements = {
-  attachCodebaseButton: document.querySelector("#attach-codebase-button"),
-  attachDialog: document.querySelector("#attach-dialog"),
-  attachDialogCancel: document.querySelector("#attach-dialog-cancel"),
-  attachDialogClose: document.querySelector("#attach-dialog-close"),
-  attachDialogForm: document.querySelector("#attach-dialog-form"),
-  attachDialogInput: document.querySelector("#attach-dialog-input"),
   chatLog: document.querySelector("#chat-log"),
   clearToolsButton: document.querySelector("#clear-tools-button"),
   composerForm: document.querySelector("#composer-form"),
   composerInput: document.querySelector("#composer-input"),
+  budgetOptions: document.querySelector("#budget-options"),
+  controlCenter: document.querySelector("#control-center"),
+  controlCenterBackdrop: document.querySelector("#control-center-backdrop"),
+  controlCenterButton: document.querySelector("#control-center-button"),
+  controlCenterClose: document.querySelector("#control-center-close"),
+  customPresetForm: document.querySelector("#custom-preset-form"),
+  customPresetList: document.querySelector("#custom-preset-list"),
+  customPresetName: document.querySelector("#custom-preset-name"),
+  customPresetPrompt: document.querySelector("#custom-preset-prompt"),
   deleteDialog: document.querySelector("#delete-dialog"),
   deleteDialogCancel: document.querySelector("#delete-dialog-cancel"),
   deleteDialogClose: document.querySelector("#delete-dialog-close"),
@@ -40,6 +51,13 @@ const elements = {
   deleteDialogCopy: document.querySelector("#delete-dialog-copy"),
   filePreview: document.querySelector("#file-preview"),
   filePreviewTitle: document.querySelector("#file-preview-title"),
+  diagnosticsList: document.querySelector("#diagnostics-list"),
+  drawerClearTools: document.querySelector("#drawer-clear-tools"),
+  drawerNewSession: document.querySelector("#drawer-new-session"),
+  drawerResetSession: document.querySelector("#drawer-reset-session"),
+  drawerSaveSession: document.querySelector("#drawer-save-session"),
+  drawerSwitchWorkspace: document.querySelector("#drawer-switch-workspace"),
+  hiddenPathList: document.querySelector("#hidden-path-list"),
   messageTemplate: document.querySelector("#message-template"),
   modelSelect: document.querySelector("#model-select"),
   newSessionButton: document.querySelector("#new-session-button"),
@@ -49,7 +67,7 @@ const elements = {
   repoFilterInput: document.querySelector("#repo-filter-input"),
   repoRootButton: document.querySelector("#repo-root-button"),
   repoTree: document.querySelector("#repo-tree"),
-  recentCodebases: document.querySelector("#recent-codebases"),
+  recentWorkspaces: document.querySelector("#recent-workspaces"),
   resetSessionButton: document.querySelector("#reset-session-button"),
   saveDialog: document.querySelector("#save-dialog"),
   saveDialogCancel: document.querySelector("#save-dialog-cancel"),
@@ -64,9 +82,20 @@ const elements = {
   sessionTitle: document.querySelector("#session-title"),
   statusBanner: document.querySelector("#status-banner"),
   statusText: document.querySelector("#status-text"),
+  switchWorkspaceButton: document.querySelector("#switch-workspace-button"),
+  toolProfileOptions: document.querySelector("#tool-profile-options"),
+  toolToggleList: document.querySelector("#tool-toggle-list"),
   toolEvents: document.querySelector("#tool-events"),
+  workspaceDialog: document.querySelector("#workspace-dialog"),
+  workspaceDialogBrowse: document.querySelector("#workspace-dialog-browse"),
+  workspaceDialogCancel: document.querySelector("#workspace-dialog-cancel"),
+  workspaceDialogClose: document.querySelector("#workspace-dialog-close"),
+  workspaceDialogForm: document.querySelector("#workspace-dialog-form"),
+  workspaceDialogInput: document.querySelector("#workspace-dialog-input"),
   workspaceTitle: document.querySelector("#workspace-title"),
 };
+
+const customPresetStorageKey = "quiet-lab.customPresets.v1";
 
 function escapeHtml(value) {
   return String(value)
@@ -102,7 +131,10 @@ async function fetchJson(url, options = {}) {
 
   if (!response.ok) {
     const payload = await response.json().catch(() => ({}));
-    throw new Error(payload.error || "Request failed");
+    const error = new Error(payload.error || "Request failed");
+    error.status = response.status;
+    error.url = url;
+    throw error;
   }
 
   return response.json();
@@ -111,6 +143,30 @@ async function fetchJson(url, options = {}) {
 function setStatus(text, tone = "neutral") {
   state.statusText = text;
   state.statusTone = tone;
+}
+
+function showError(error) {
+  setStatus(error.message, "error");
+  render();
+}
+
+function loadCustomPresetsFromStorage() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(customPresetStorageKey) || "[]");
+    state.customPresets = Array.isArray(saved)
+      ? saved.filter((preset) => preset?.name && preset?.prompt)
+      : [];
+  } catch {
+    state.customPresets = [];
+  }
+}
+
+function saveCustomPresetsToStorage() {
+  localStorage.setItem(customPresetStorageKey, JSON.stringify(state.customPresets));
+}
+
+function getCustomPresetByValue(value) {
+  return state.customPresets.find((preset) => `custom:${preset.name}` === value);
 }
 
 function getSessionTitle(session) {
@@ -252,13 +308,7 @@ function renderRepoTree() {
   elements.repoTree.innerHTML = "";
 
   if (!state.workspace.attached) {
-    elements.repoTree.innerHTML = `
-      <div class="repo-empty-state">
-        <p>No codebase attached.</p>
-        <button class="primary-button" type="button" data-open-attach>Attach Codebase</button>
-      </div>
-    `;
-    elements.repoTree.querySelector("[data-open-attach]")?.addEventListener("click", openAttachDialog);
+    elements.repoTree.innerHTML = `<p class="empty-state">Switch to a repository folder to browse files.</p>`;
     return;
   }
 
@@ -298,10 +348,6 @@ function renderRepoTree() {
 function renderBreadcrumbs() {
   elements.repoBreadcrumbs.innerHTML = "";
 
-  if (!state.workspace.attached) {
-    return;
-  }
-
   const segments = state.currentRepoPath === "." ? [] : state.currentRepoPath.split("/");
   const crumbs = [{ label: "root", path: "." }];
 
@@ -325,19 +371,166 @@ function renderFilePreview() {
   elements.filePreviewTitle.textContent = state.currentFile || "Select a file";
   elements.filePreview.textContent =
     state.filePreview ||
-    (state.workspace.attached
-      ? "Select a repository file to preview it here with line numbers."
-      : "Attach a codebase to preview files here.");
+    "Select a repository file to preview it here with line numbers.";
   elements.selectedFileButton.disabled = !state.currentFile;
 }
 
 function renderWorkspace() {
-  elements.workspaceTitle.textContent = state.workspace.attached
-    ? state.workspace.repoName
-    : "No codebase";
-  elements.attachCodebaseButton.textContent = state.workspace.attached
-    ? "Switch Codebase"
-    : "Attach Codebase";
+  elements.workspaceTitle.textContent = state.workspace.repoName || "No repo";
+
+  elements.recentWorkspaces.innerHTML = "";
+  const recent = state.workspace.recentCodebases || [];
+
+  if (!recent.length) {
+    elements.recentWorkspaces.innerHTML = `<p class="empty-state">No recent repositories.</p>`;
+    return;
+  }
+
+  for (const recentPath of recent) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "recent-workspace-button";
+    button.textContent = recentPath;
+    button.addEventListener("click", () => switchWorkspace(recentPath).catch(showError));
+    elements.recentWorkspaces.append(button);
+  }
+}
+
+function renderSegmentedOptions(container, items, activeValue, onSelect) {
+  container.innerHTML = "";
+
+  for (const item of items) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `segment-option${item.value === activeValue ? " active" : ""}`;
+    button.innerHTML = `
+      <strong>${escapeHtml(item.label)}</strong>
+      <span>${escapeHtml(item.description || "")}</span>
+    `;
+    button.disabled = state.sending;
+    button.addEventListener("click", () => onSelect(item.value));
+    container.append(button);
+  }
+}
+
+function renderControlCenter() {
+  elements.controlCenter.hidden = !state.controlCenterOpen;
+  elements.controlCenterBackdrop.hidden = !state.controlCenterOpen;
+  elements.controlCenterButton.setAttribute("aria-expanded", state.controlCenterOpen ? "true" : "false");
+
+  const config = state.tooling.config;
+  const profiles = state.tooling.profiles || {};
+  const budgets = state.tooling.budgets || {};
+
+  if (config) {
+    renderSegmentedOptions(
+      elements.toolProfileOptions,
+      Object.entries(profiles).map(([value, profile]) => ({
+        value,
+        label: profile.label || value,
+        description: `${profile.enabledTools?.length || 0} tools`,
+      })),
+      config.profile,
+      (profile) => updateTooling({ profile }).catch(showError),
+    );
+
+    renderSegmentedOptions(
+      elements.budgetOptions,
+      Object.entries(budgets).map(([value, budget]) => ({
+        value,
+        label: budget.label || value,
+        description: `${budget.maxToolRounds} rounds · ${budget.maxFileLines} lines`,
+      })),
+      config.budget,
+      (budget) => updateTooling({ budget }).catch(showError),
+    );
+  }
+
+  elements.toolToggleList.innerHTML = "";
+  for (const tool of state.tooling.tools || []) {
+    const label = document.createElement("label");
+    label.className = "tool-toggle-row";
+    label.innerHTML = `
+      <input type="checkbox" ${tool.enabled ? "checked" : ""} />
+      <span>
+        <strong>${escapeHtml(tool.name)}</strong>
+        <small>${escapeHtml(tool.cost)} · ${escapeHtml(tool.description)}</small>
+      </span>
+    `;
+    const checkbox = label.querySelector("input");
+    checkbox.disabled = state.sending;
+    checkbox.addEventListener("change", () => {
+      const enabledTools = state.tooling.tools
+        .filter((candidate) => (candidate.name === tool.name ? checkbox.checked : candidate.enabled))
+        .map((candidate) => candidate.name);
+      updateTooling({ enabledTools }).catch(showError);
+    });
+    elements.toolToggleList.append(label);
+  }
+
+  elements.hiddenPathList.innerHTML = (state.meta?.hiddenPaths || [])
+    .map((hiddenPath) => `<span>${escapeHtml(hiddenPath)}</span>`)
+    .join("");
+
+  renderCustomPresets();
+  renderDiagnostics();
+}
+
+function renderCustomPresets() {
+  elements.customPresetList.innerHTML = "";
+
+  if (!state.customPresets.length) {
+    elements.customPresetList.innerHTML = `<p class="empty-state">No custom presets yet.</p>`;
+    return;
+  }
+
+  for (const preset of state.customPresets) {
+    const chip = document.createElement("div");
+    chip.className = "preset-chip";
+    chip.innerHTML = `
+      <span>${escapeHtml(preset.name)}</span>
+      <button type="button" aria-label="Delete ${escapeHtml(preset.name)}">×</button>
+    `;
+    chip.querySelector("button").addEventListener("click", () => {
+      state.customPresets = state.customPresets.filter((candidate) => candidate.name !== preset.name);
+      saveCustomPresetsToStorage();
+      renderPresetSelect();
+      renderControlCenter();
+    });
+    elements.customPresetList.append(chip);
+  }
+}
+
+function renderDiagnostics() {
+  const config = state.tooling.config;
+  const items = [
+    ["Model", state.model || state.meta?.defaultModel || "none"],
+    ["Preset", state.preset || "coder"],
+    ["Tool mode", config?.profile || "unknown"],
+    ["Budget", config?.budget || "unknown"],
+    ["Enabled tools", String(config?.enabledTools?.length || 0)],
+    ["Tool events", String(state.toolEvents.length)],
+    ["Ollama", state.meta?.ollamaReachable ? "online" : "offline"],
+    ["Repository", state.workspace.repoName || "none"],
+  ];
+
+  elements.diagnosticsList.innerHTML = items
+    .map(([key, value]) => `<dt>${escapeHtml(key)}</dt><dd>${escapeHtml(value)}</dd>`)
+    .join("");
+}
+
+function renderPresetSelect() {
+  const builtinOptions = (state.meta?.presets || [])
+    .map((preset) => `<option value="${escapeHtml(preset)}">${escapeHtml(preset)}</option>`)
+    .join("");
+  const customOptions = state.customPresets.length
+    ? `<optgroup label="Custom">${state.customPresets
+        .map((preset) => `<option value="custom:${escapeHtml(preset.name)}">${escapeHtml(preset.name)}</option>`)
+        .join("")}</optgroup>`
+    : "";
+
+  elements.presetSelect.innerHTML = `${builtinOptions}${customOptions}`;
+  elements.presetSelect.value = state.preset || "coder";
 }
 
 function syncControls() {
@@ -349,12 +542,18 @@ function syncControls() {
   elements.modelSelect.disabled = state.sending;
   elements.newSessionButton.disabled = state.sending;
   elements.presetSelect.disabled = state.sending;
-  elements.repoFilterInput.disabled = state.sending || !state.workspace.attached;
+  elements.repoFilterInput.disabled = state.sending;
   elements.repoRootButton.disabled = state.sending || !state.workspace.attached;
+  elements.switchWorkspaceButton.disabled = state.sending;
   elements.resetSessionButton.disabled = state.sending || !state.currentSessionId;
   elements.saveSessionButton.disabled = state.sending || !state.currentSessionId || getVisibleMessages().length === 0;
   elements.selectedFileButton.disabled = state.sending || !state.currentFile;
   elements.sendButton.disabled = sendDisabled;
+  elements.drawerNewSession.disabled = state.sending;
+  elements.drawerResetSession.disabled = state.sending || !state.currentSessionId;
+  elements.drawerSaveSession.disabled = state.sending || !state.currentSessionId || getVisibleMessages().length === 0;
+  elements.drawerClearTools.disabled = state.sending || !state.toolEvents.length;
+  elements.drawerSwitchWorkspace.disabled = state.sending;
   elements.sendButton.textContent = state.sending ? "Sending..." : "Send";
   for (const button of elements.quickPromptButtons) {
     button.disabled = state.sending;
@@ -362,8 +561,8 @@ function syncControls() {
 }
 
 function render() {
-  renderWorkspace();
   renderStatus();
+  renderWorkspace();
   renderSessionStats();
   renderSessions();
   renderMessages();
@@ -371,37 +570,8 @@ function render() {
   renderRepoTree();
   renderBreadcrumbs();
   renderFilePreview();
+  renderControlCenter();
   syncControls();
-}
-
-function renderRecentCodebases() {
-  const recent = state.workspace.recentCodebases || [];
-
-  if (!recent.length) {
-    elements.recentCodebases.innerHTML = "";
-    return;
-  }
-
-  elements.recentCodebases.innerHTML = `
-    <p class="dialog-label">Recent</p>
-    <div class="recent-codebase-list"></div>
-  `;
-  const list = elements.recentCodebases.querySelector(".recent-codebase-list");
-
-  for (const recentPath of recent) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "recent-codebase";
-    button.textContent = recentPath;
-    button.addEventListener("click", () => {
-      elements.attachDialogInput.value = recentPath;
-      attachSelectedCodebase(recentPath).catch((error) => {
-        setStatus(error.message, "error");
-        render();
-      });
-    });
-    list.append(button);
-  }
 }
 
 async function loadMeta() {
@@ -413,6 +583,12 @@ async function loadMeta() {
     ...state.workspace,
     ...(state.meta.workspace || {}),
   };
+  state.tooling = {
+    budgets: state.meta.resourceBudgets || {},
+    config: state.meta.toolConfig || null,
+    profiles: state.meta.toolProfiles || {},
+    tools: state.meta.tools || [],
+  };
 
   if (state.meta.ollamaReachable) {
     setStatus("Workspace ready.", "success");
@@ -423,13 +599,37 @@ async function loadMeta() {
   elements.modelSelect.innerHTML = state.meta.models
     .map((model) => `<option value="${escapeHtml(model)}">${escapeHtml(model)}</option>`)
     .join("");
-  elements.presetSelect.innerHTML = state.meta.presets
-    .map((preset) => `<option value="${escapeHtml(preset)}">${escapeHtml(preset)}</option>`)
-    .join("");
+  renderPresetSelect();
 }
 
 async function loadWorkspace() {
   state.workspace = await fetchJson("/api/workspace");
+}
+
+async function loadTooling() {
+  const payload = await fetchJson("/api/tooling");
+  state.tooling = {
+    budgets: payload.budgets || {},
+    config: payload.config || null,
+    profiles: payload.profiles || {},
+    tools: payload.tools || [],
+  };
+}
+
+async function updateTooling(update) {
+  const payload = await fetchJson("/api/tooling", {
+    method: "POST",
+    body: JSON.stringify(update),
+  });
+
+  state.tooling = {
+    budgets: payload.budgets || state.tooling.budgets,
+    config: payload.config,
+    profiles: payload.profiles || state.tooling.profiles,
+    tools: payload.tools || [],
+  };
+  setStatus(`Tooling updated: ${state.tooling.config.profile} / ${state.tooling.config.budget}.`, "success");
+  render();
 }
 
 async function loadSessions() {
@@ -445,11 +645,13 @@ async function loadSession(sessionId) {
 }
 
 async function createSession() {
+  const customPreset = getCustomPresetByValue(state.preset);
   const payload = await fetchJson("/api/sessions", {
     method: "POST",
     body: JSON.stringify({
       model: state.model,
       preset: state.preset,
+      customPresetPrompt: customPreset?.prompt || null,
     }),
   });
 
@@ -457,38 +659,6 @@ async function createSession() {
   state.toolEvents = [];
   setStatus("New session ready.", "success");
   await loadSession(payload.session.sessionId);
-}
-
-function openAttachDialog() {
-  elements.attachDialogInput.value = "";
-  renderRecentCodebases();
-  elements.attachDialog.hidden = false;
-  elements.attachDialogInput.focus();
-}
-
-function closeAttachDialog() {
-  elements.attachDialog.hidden = true;
-}
-
-async function attachSelectedCodebase(inputPath) {
-  const payload = await fetchJson("/api/workspace", {
-    method: "POST",
-    body: JSON.stringify({ path: inputPath }),
-  });
-
-  state.workspace = payload;
-  state.currentFile = null;
-  state.filePreview = null;
-  state.repoEntries = [];
-  state.repoFilter = "";
-  state.currentRepoPath = ".";
-  state.toolEvents = [];
-  elements.repoFilterInput.value = "";
-  await createSession();
-  await loadRepoTree(".");
-  closeAttachDialog();
-  setStatus(`Attached ${payload.repoName}.`, "success");
-  render();
 }
 
 async function resetSession() {
@@ -565,6 +735,92 @@ function closeDeleteDialog() {
   elements.deleteDialog.hidden = true;
 }
 
+function openControlCenter() {
+  state.controlCenterOpen = true;
+  renderControlCenter();
+}
+
+function closeControlCenter() {
+  state.controlCenterOpen = false;
+  renderControlCenter();
+}
+
+function openWorkspaceDialog() {
+  elements.workspaceDialogInput.value = "";
+  elements.workspaceDialog.hidden = false;
+  elements.workspaceDialogInput.focus();
+}
+
+function closeWorkspaceDialog() {
+  elements.workspaceDialog.hidden = true;
+}
+
+async function switchWorkspace(inputPath) {
+  const payload = await fetchJson("/api/workspace", {
+    method: "POST",
+    body: JSON.stringify({ path: inputPath }),
+  });
+
+  await applyWorkspacePayload(payload);
+}
+
+async function browseWorkspace() {
+  setStatus("Opening folder picker...", "busy");
+  render();
+  let payload;
+
+  try {
+    payload = await fetchJson("/api/workspace/pick", {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+  } catch (error) {
+    if (error.status === 404) {
+      throw new Error("Browse Folders needs the updated local server. Stop and restart `npm run web`, then try Browse again. You can paste a folder path without restarting.");
+    }
+
+    throw error;
+  }
+
+  await applyWorkspacePayload(payload);
+}
+
+async function applyWorkspacePayload(payload) {
+  state.workspace = payload;
+  state.currentFile = null;
+  state.filePreview = null;
+  state.repoEntries = [];
+  state.repoFilter = "";
+  state.currentRepoPath = ".";
+  state.toolEvents = [];
+  elements.repoFilterInput.value = "";
+  await loadRepoTree(".");
+  closeWorkspaceDialog();
+  closeControlCenter();
+  setStatus(`Repository switched to ${payload.repoName}.`, "success");
+  render();
+}
+
+function addCustomPreset(name, prompt) {
+  const cleanName = String(name || "")
+    .trim()
+    .replace(/[^A-Za-z0-9 _-]+/g, "")
+    .replace(/\s+/g, " ")
+    .slice(0, 40);
+  const cleanPrompt = String(prompt || "").trim();
+
+  if (!cleanName || !cleanPrompt) {
+    throw new Error("Preset name and prompt are required.");
+  }
+
+  state.customPresets = [
+    { name: cleanName, prompt: cleanPrompt },
+    ...state.customPresets.filter((preset) => preset.name !== cleanName),
+  ].slice(0, 12);
+  saveCustomPresetsToStorage();
+  renderPresetSelect();
+}
+
 async function deleteSelectedSession() {
   const session = state.deleteSessionTarget;
 
@@ -599,11 +855,13 @@ async function updateConfig() {
     return;
   }
 
+  const customPreset = getCustomPresetByValue(state.preset);
   const payload = await fetchJson(`/api/sessions/${encodeURIComponent(state.currentSessionId)}/config`, {
     method: "POST",
     body: JSON.stringify({
       model: state.model,
       preset: state.preset,
+      customPresetPrompt: customPreset?.prompt || null,
       resetHistory: true,
     }),
   });
@@ -617,8 +875,8 @@ async function updateConfig() {
 
 async function loadRepoTree(targetPath = ".") {
   if (!state.workspace.attached) {
-    state.repoEntries = [];
     state.currentRepoPath = ".";
+    state.repoEntries = [];
     render();
     return;
   }
@@ -635,7 +893,7 @@ async function loadRepoTree(targetPath = ".") {
 
 async function loadRepoFile(targetPath) {
   if (!state.workspace.attached) {
-    setStatus("Attach a codebase first.", "error");
+    setStatus("Switch to a repository first.", "error");
     render();
     return;
   }
@@ -798,17 +1056,16 @@ async function streamChat(message) {
 }
 
 async function init() {
+  loadCustomPresetsFromStorage();
   await loadMeta();
   await loadWorkspace();
+  await loadTooling();
+  await loadRepoTree(".");
 
   if (!state.sessions.length) {
     await createSession();
   } else {
     await loadSession(state.sessions[0].sessionId);
-  }
-
-  if (state.workspace.attached) {
-    await loadRepoTree(".");
   }
 
   render();
@@ -821,29 +1078,67 @@ elements.newSessionButton.addEventListener("click", () => {
   });
 });
 
-elements.attachCodebaseButton.addEventListener("click", openAttachDialog);
+elements.controlCenterButton.addEventListener("click", openControlCenter);
+elements.controlCenterClose.addEventListener("click", closeControlCenter);
+elements.controlCenterBackdrop.addEventListener("click", closeControlCenter);
+elements.switchWorkspaceButton.addEventListener("click", openWorkspaceDialog);
+elements.drawerSwitchWorkspace.addEventListener("click", openWorkspaceDialog);
+
+elements.workspaceDialogForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  switchWorkspace(elements.workspaceDialogInput.value).catch(showError);
+});
+elements.workspaceDialogBrowse.addEventListener("click", () => {
+  browseWorkspace().catch(showError);
+});
+elements.workspaceDialogCancel.addEventListener("click", closeWorkspaceDialog);
+elements.workspaceDialogClose.addEventListener("click", closeWorkspaceDialog);
+elements.workspaceDialog.addEventListener("click", (event) => {
+  if (event.target === elements.workspaceDialog) {
+    closeWorkspaceDialog();
+  }
+});
+
+elements.drawerNewSession.addEventListener("click", () => {
+  closeControlCenter();
+  createSession().catch(showError);
+});
+
+elements.drawerSaveSession.addEventListener("click", () => {
+  closeControlCenter();
+  openSaveDialog();
+});
+
+elements.drawerResetSession.addEventListener("click", () => {
+  closeControlCenter();
+  resetSession().catch(showError);
+});
+
+elements.drawerClearTools.addEventListener("click", () => {
+  state.toolEvents = [];
+  setStatus("Tool activity cleared.", "neutral");
+  render();
+});
+
+elements.customPresetForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+
+  try {
+    addCustomPreset(elements.customPresetName.value, elements.customPresetPrompt.value);
+    elements.customPresetName.value = "";
+    elements.customPresetPrompt.value = "";
+    setStatus("Custom preset added.", "success");
+    render();
+  } catch (error) {
+    showError(error);
+  }
+});
 
 elements.repoRootButton.addEventListener("click", () => {
   loadRepoTree(".").catch((error) => {
     setStatus(error.message, "error");
     render();
   });
-});
-
-elements.attachDialogForm.addEventListener("submit", (event) => {
-  event.preventDefault();
-  attachSelectedCodebase(elements.attachDialogInput.value).catch((error) => {
-    setStatus(error.message, "error");
-    render();
-  });
-});
-
-elements.attachDialogCancel.addEventListener("click", closeAttachDialog);
-elements.attachDialogClose.addEventListener("click", closeAttachDialog);
-elements.attachDialog.addEventListener("click", (event) => {
-  if (event.target === elements.attachDialog) {
-    closeAttachDialog();
-  }
 });
 
 elements.repoFilterInput.addEventListener("input", (event) => {
@@ -897,16 +1192,20 @@ elements.saveDialog.addEventListener("click", (event) => {
 });
 
 document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && state.controlCenterOpen) {
+    closeControlCenter();
+  }
+
+  if (event.key === "Escape" && !elements.workspaceDialog.hidden) {
+    closeWorkspaceDialog();
+  }
+
   if (event.key === "Escape" && !elements.saveDialog.hidden) {
     closeSaveDialog();
   }
 
   if (event.key === "Escape" && !elements.deleteDialog.hidden) {
     closeDeleteDialog();
-  }
-
-  if (event.key === "Escape" && !elements.attachDialog.hidden) {
-    closeAttachDialog();
   }
 });
 

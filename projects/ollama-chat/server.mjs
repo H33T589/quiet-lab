@@ -1,8 +1,11 @@
+import { execFile } from "node:child_process";
 import { createReadStream } from "node:fs";
 import { mkdir, stat } from "node:fs/promises";
 import http from "node:http";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import {
   ChatSession,
   createSessionId,
@@ -18,13 +21,17 @@ import { listPresets } from "./presets.mjs";
 import { resolvePublicFilePath } from "./public-static.mjs";
 import {
   attachCodebase,
-  detachCodebase,
+  configureTooling,
+  getToolRuntimeConfig,
   getWorkspaceSnapshot,
   hiddenPaths,
+  listToolCatalog,
   listRepoEntries,
   listTools,
   loadWorkspaceState,
   readRepoText,
+  resourceBudgets,
+  toolProfiles,
 } from "./tools.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -32,6 +39,7 @@ const publicDir = path.join(__dirname, "public");
 const host = process.env.OLLAMA_CHAT_HOST || "127.0.0.1";
 const port = Number.parseInt(process.env.OLLAMA_CHAT_PORT || "4317", 10);
 const defaultModel = process.env.OLLAMA_MODEL || "llama3.2:3b";
+const execFileAsync = promisify(execFile);
 
 const contentTypes = {
   ".css": "text/css; charset=utf-8",
@@ -102,6 +110,60 @@ function sendEvent(res, event, data) {
   res.write(`data: ${JSON.stringify(data)}\n\n`);
 }
 
+async function pickWorkspaceDirectory() {
+  const platform = os.platform();
+
+  if (platform === "darwin") {
+    const { stdout } = await execFileAsync("osascript", [
+      "-e",
+      'POSIX path of (choose folder with prompt "Choose a repository folder for quiet-lab")',
+    ]);
+    return stdout.trim();
+  }
+
+  if (platform === "win32") {
+    const script = [
+      "Add-Type -AssemblyName System.Windows.Forms",
+      "$dialog = New-Object System.Windows.Forms.FolderBrowserDialog",
+      "$dialog.Description = 'Choose a repository folder for quiet-lab'",
+      "$dialog.ShowNewFolderButton = $false",
+      "if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {",
+      "  Write-Output $dialog.SelectedPath",
+      "} else {",
+      "  exit 1",
+      "}",
+    ].join("; ");
+    const { stdout } = await execFileAsync("powershell.exe", [
+      "-NoProfile",
+      "-STA",
+      "-Command",
+      script,
+    ]);
+    return stdout.trim();
+  }
+
+  try {
+    const { stdout } = await execFileAsync("zenity", [
+      "--file-selection",
+      "--directory",
+      "--title=Choose a repository folder for quiet-lab",
+    ]);
+    return stdout.trim();
+  } catch (error) {
+    if (error?.code !== "ENOENT") {
+      throw error;
+    }
+  }
+
+  const { stdout } = await execFileAsync("kdialog", [
+    "--getexistingdirectory",
+    os.homedir(),
+    "--title",
+    "Choose a repository folder for quiet-lab",
+  ]);
+  return stdout.trim();
+}
+
 async function handleMeta(_req, res) {
   const [sessions, models] = await Promise.all([
     listSessionSummaries(),
@@ -114,8 +176,12 @@ async function handleMeta(_req, res) {
     ollamaReachable: models.length > 0,
     models: models.length ? models : [defaultModel],
     presets: listPresets(),
-    workspace: getWorkspaceSnapshot(),
+    repoName: getWorkspaceSnapshot().repoName,
+    workspace: getWorkspaceSnapshot({ includeRecent: true }),
     sessions,
+    toolConfig: getToolRuntimeConfig(),
+    toolProfiles,
+    resourceBudgets,
     tools: listTools()
       .split("\n")
       .map((line) => {
@@ -131,11 +197,6 @@ async function handleWorkspace(req, res) {
     return;
   }
 
-  if (req.method === "DELETE") {
-    sendJson(res, 200, await detachCodebase());
-    return;
-  }
-
   if (req.method !== "POST") {
     sendMethodNotAllowed(res);
     return;
@@ -148,6 +209,56 @@ async function handleWorkspace(req, res) {
   } catch (error) {
     sendBadRequest(res, error.message);
   }
+}
+
+async function handleWorkspacePick(req, res) {
+  if (req.method !== "POST") {
+    sendMethodNotAllowed(res);
+    return;
+  }
+
+  try {
+    const selectedPath = await pickWorkspaceDirectory();
+
+    if (!selectedPath) {
+      sendBadRequest(res, "No folder was selected.");
+      return;
+    }
+
+    sendJson(res, 200, await attachCodebase(selectedPath));
+  } catch (error) {
+    const message = error?.code === "ENOENT"
+      ? "No native folder picker is available. Paste a folder path instead."
+      : os.platform() === "darwin"
+        ? "Finder folder picker was cancelled or blocked. Allow automation permissions for your terminal, or paste a folder path instead."
+        : "Folder picker was cancelled or could not open. Paste a folder path instead.";
+    sendBadRequest(res, message);
+  }
+}
+
+async function handleTooling(req, res) {
+  if (req.method === "GET") {
+    sendJson(res, 200, {
+      config: getToolRuntimeConfig(),
+      profiles: toolProfiles,
+      budgets: resourceBudgets,
+      tools: listToolCatalog(),
+    });
+    return;
+  }
+
+  if (req.method !== "POST") {
+    sendMethodNotAllowed(res);
+    return;
+  }
+
+  const body = await readJsonBody(req);
+  sendJson(res, 200, {
+    config: configureTooling(body),
+    profiles: toolProfiles,
+    budgets: resourceBudgets,
+    tools: listToolCatalog(),
+  });
 }
 
 async function handleSessions(_req, res) {
@@ -170,6 +281,13 @@ async function handleCreateSession(req, res) {
     model: body.model || defaultModel,
     preset: body.preset || "coder",
   });
+
+  if (body.customPresetPrompt) {
+    await session.setCustomPreset(body.preset || "custom", body.customPresetPrompt, {
+      resetHistory: true,
+    });
+  }
+
   await session.save();
   sendJson(res, 201, {
     session: session.toJSON(),
@@ -229,7 +347,11 @@ async function handleSessionById(req, res, pathname) {
       await session.setModel(body.model);
     }
 
-    if (body.preset) {
+    if (body.customPresetPrompt) {
+      await session.setCustomPreset(body.preset || "custom", body.customPresetPrompt, {
+        resetHistory: body.resetHistory !== false,
+      });
+    } else if (body.preset) {
       await session.setPreset(body.preset, { resetHistory: body.resetHistory !== false });
     }
 
@@ -379,8 +501,18 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (pathname === "/api/workspace/pick") {
+      await handleWorkspacePick(req, res);
+      return;
+    }
+
     if (pathname === "/api/workspace") {
       await handleWorkspace(req, res);
+      return;
+    }
+
+    if (pathname === "/api/tooling") {
+      await handleTooling(req, res);
       return;
     }
 

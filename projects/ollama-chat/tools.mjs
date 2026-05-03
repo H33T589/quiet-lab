@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { realpathSync } from "node:fs";
-import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -8,29 +8,36 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+export const repoRoot = path.resolve(__dirname, "../..");
 const workspaceStatePath = path.join(__dirname, "sessions", "workspace.json");
 const maxRecentCodebases = 8;
 
-let activeRepoRoot = null;
-let activeRepoRootCanonical = null;
-let recentCodebases = [];
+const repoRootCanonical = (() => {
+  try {
+    return realpathSync(repoRoot);
+  } catch {
+    return path.normalize(repoRoot);
+  }
+})();
+
+let activeRepoRoot = repoRootCanonical;
+let activeRepoRootCanonical = repoRootCanonical;
+let recentCodebases = [repoRootCanonical];
 
 export const hiddenPaths = [
   ".git",
   ".idea",
   ".vscode",
   ".DS_Store",
-  ".next",
-  ".turbo",
-  "build",
-  "coverage",
-  "dist",
+  "models/.ollama",
   "node_modules",
+  "projects/ollama-chat/sessions",
 ];
 
 const toolDescriptions = {
   get_repo_overview:
-    "Inspect the attached repository and return a concise overview with structure, likely stack, entry points, and key files. Use this first for broad questions like what this project is or how it works.",
+    "Inspect the attached repository and return a concise overview with structure, likely stack, entry points, and key files.",
   find_entrypoints:
     "Find likely application entry points, build configs, route roots, and package scripts in the repository.",
   inspect_dependencies:
@@ -38,14 +45,128 @@ const toolDescriptions = {
   list_repo_files:
     "List files and directories inside the repository. Use this for structure questions. Prefer relative paths.",
   read_many_files:
-    "Read bounded excerpts from multiple repository text files in one call. Use this when context spans package, README, app entry, and config files.",
+    "Read bounded excerpts from multiple repository text files in one call.",
   read_repo_file:
     "Read a text file from the repository with line numbers. Use this for README, source, and config questions.",
   search_repo:
     "Search repository files for a string or regex pattern. Use this only to locate unknown text or symbols.",
   summarize_file_symbols:
-    "Summarize lightweight symbols from a source file: imports, exports, functions, classes, components, selectors, routes, and scripts.",
+    "Summarize lightweight symbols from a source file: imports, exports, functions, classes, selectors, routes, and scripts.",
 };
+
+const toolCatalog = {
+  get_repo_overview: {
+    category: "repo",
+    cost: "low",
+    description: toolDescriptions.get_repo_overview,
+  },
+  find_entrypoints: {
+    category: "repo",
+    cost: "low",
+    description: toolDescriptions.find_entrypoints,
+  },
+  inspect_dependencies: {
+    category: "repo",
+    cost: "low",
+    description: toolDescriptions.inspect_dependencies,
+  },
+  list_repo_files: {
+    category: "repo",
+    cost: "low",
+    description: toolDescriptions.list_repo_files,
+  },
+  read_many_files: {
+    category: "repo",
+    cost: "medium",
+    description: toolDescriptions.read_many_files,
+  },
+  read_repo_file: {
+    category: "repo",
+    cost: "medium",
+    description: toolDescriptions.read_repo_file,
+  },
+  search_repo: {
+    category: "repo",
+    cost: "medium",
+    description: toolDescriptions.search_repo,
+  },
+  summarize_file_symbols: {
+    category: "repo",
+    cost: "low",
+    description: toolDescriptions.summarize_file_symbols,
+  },
+};
+
+export const resourceBudgets = {
+  low: {
+    label: "Low RAM",
+    maxToolRounds: 1,
+    maxBootstrapCalls: 2,
+    maxListDepth: 2,
+    maxListEntries: 80,
+    maxFileLines: 120,
+    maxSearchResults: 20,
+  },
+  balanced: {
+    label: "Balanced",
+    maxToolRounds: 3,
+    maxBootstrapCalls: 4,
+    maxListDepth: 3,
+    maxListEntries: 120,
+    maxFileLines: 200,
+    maxSearchResults: 35,
+  },
+  expanded: {
+    label: "More Context",
+    maxToolRounds: 5,
+    maxBootstrapCalls: 6,
+    maxListDepth: 4,
+    maxListEntries: 200,
+    maxFileLines: 250,
+    maxSearchResults: 50,
+  },
+};
+
+export const toolProfiles = {
+  minimal: {
+    label: "Minimal",
+    budget: "low",
+    enabledTools: ["get_repo_overview", "list_repo_files", "read_repo_file"],
+  },
+  coding: {
+    label: "Coding",
+    budget: "low",
+    enabledTools: [
+      "get_repo_overview",
+      "find_entrypoints",
+      "inspect_dependencies",
+      "list_repo_files",
+      "read_many_files",
+      "read_repo_file",
+      "search_repo",
+      "summarize_file_symbols",
+    ],
+  },
+  deep: {
+    label: "Deep",
+    budget: "expanded",
+    enabledTools: [
+      "get_repo_overview",
+      "find_entrypoints",
+      "inspect_dependencies",
+      "list_repo_files",
+      "read_many_files",
+      "read_repo_file",
+      "search_repo",
+      "summarize_file_symbols",
+    ],
+  },
+};
+
+let toolRuntimeConfig = normalizeToolRuntimeConfig({
+  profile: process.env.OLLAMA_TOOL_PROFILE || "coding",
+  budget: process.env.OLLAMA_RESOURCE_BUDGET || null,
+});
 
 export const toolDefinitions = [
   {
@@ -58,7 +179,7 @@ export const toolDefinitions = [
         properties: {
           max_entries: {
             type: "integer",
-            description: "Maximum top-level and important files to include. Defaults to 80 and is capped at 160.",
+            description: "Maximum top-level and important files to include.",
           },
         },
       },
@@ -128,7 +249,7 @@ export const toolDefinitions = [
           },
           max_lines_per_file: {
             type: "integer",
-            description: "Maximum lines to include per file. Defaults to 80 and is capped at 160.",
+            description: "Maximum lines to include per file.",
           },
         },
       },
@@ -203,10 +324,78 @@ export const toolDefinitions = [
   },
 ];
 
-export function listTools() {
-  return Object.entries(toolDescriptions)
+function normalizeToolRuntimeConfig(rawConfig = {}) {
+  const requestedProfile = String(rawConfig.profile || "coding").trim();
+  const profileName = Object.hasOwn(toolProfiles, requestedProfile) ? requestedProfile : "coding";
+  const profile = toolProfiles[profileName];
+  const requestedBudget = String(rawConfig.budget || profile.budget).trim();
+  const budgetName = Object.hasOwn(resourceBudgets, requestedBudget)
+    ? requestedBudget
+    : profile.budget;
+  const allowedTools = new Set(Object.keys(toolCatalog));
+  const requestedTools = Array.isArray(rawConfig.enabledTools)
+    ? rawConfig.enabledTools
+    : profile.enabledTools;
+  const enabledTools = requestedTools.filter((name) => allowedTools.has(name));
+
+  return {
+    profile: profileName,
+    budget: budgetName,
+    enabledTools: enabledTools.length ? enabledTools : [...profile.enabledTools],
+    limits: resourceBudgets[budgetName],
+  };
+}
+
+export function configureTooling(rawConfig = {}) {
+  const nextConfig = { ...toolRuntimeConfig, ...rawConfig };
+
+  if (Object.hasOwn(rawConfig, "profile") && !Object.hasOwn(rawConfig, "enabledTools")) {
+    delete nextConfig.enabledTools;
+  }
+
+  toolRuntimeConfig = normalizeToolRuntimeConfig({
+    ...nextConfig,
+  });
+  return getToolRuntimeConfig();
+}
+
+export function getToolRuntimeConfig() {
+  return {
+    ...toolRuntimeConfig,
+    enabledTools: [...toolRuntimeConfig.enabledTools],
+    limits: { ...toolRuntimeConfig.limits },
+  };
+}
+
+export function isToolEnabled(name) {
+  return toolRuntimeConfig.enabledTools.includes(name);
+}
+
+export function getEnabledToolDefinitions() {
+  const enabled = new Set(toolRuntimeConfig.enabledTools);
+  return toolDefinitions.filter((definition) => enabled.has(definition.function.name));
+}
+
+export function listToolCatalog() {
+  return Object.entries(toolCatalog).map(([name, metadata]) => ({
+    name,
+    ...metadata,
+    enabled: isToolEnabled(name),
+  }));
+}
+
+export function listTools({ enabledOnly = false } = {}) {
+  const entries = enabledOnly
+    ? Object.entries(toolDescriptions).filter(([name]) => isToolEnabled(name))
+    : Object.entries(toolDescriptions);
+
+  return entries
     .map(([name, description]) => `${name}: ${description}`)
     .join("\n");
+}
+
+function normalizeRelative(value = ".") {
+  return value.replace(/\\/g, "/").replace(/^\.\/+/, "").replace(/\/+$/, "") || ".";
 }
 
 function expandHome(inputPath) {
@@ -221,10 +410,6 @@ function expandHome(inputPath) {
   }
 
   return raw;
-}
-
-function normalizeRelative(value = ".") {
-  return value.replace(/\\/g, "/").replace(/^\.\/+/, "").replace(/\/+$/, "") || ".";
 }
 
 function getActiveRepoRoot() {
@@ -268,7 +453,7 @@ async function saveWorkspaceState() {
   await mkdir(path.dirname(workspaceStatePath), { recursive: true });
   await writeFile(
     workspaceStatePath,
-    JSON.stringify({ recentCodebases }, null, 2),
+    JSON.stringify({ recentCodebases, activeCodebase: activeRepoRoot }, null, 2),
     "utf8",
   );
 }
@@ -280,16 +465,27 @@ export async function loadWorkspaceState() {
     recentCodebases = Array.isArray(saved.recentCodebases)
       ? saved.recentCodebases.filter((value) => typeof value === "string")
       : [];
+
+    const activeCodebase = typeof saved.activeCodebase === "string"
+      ? saved.activeCodebase
+      : recentCodebases[0];
+
+    if (activeCodebase) {
+      await attachCodebase(activeCodebase, { persist: false });
+      return getWorkspaceSnapshot({ includeRecent: true });
+    }
   } catch {
     recentCodebases = [];
   }
 
-  activeRepoRoot = null;
-  activeRepoRootCanonical = null;
+  activeRepoRoot = repoRootCanonical;
+  activeRepoRootCanonical = repoRootCanonical;
+  recentCodebases = [repoRootCanonical, ...recentCodebases.filter((value) => value !== repoRootCanonical)]
+    .slice(0, maxRecentCodebases);
   return getWorkspaceSnapshot({ includeRecent: true });
 }
 
-export async function attachCodebase(inputPath) {
+export async function attachCodebase(inputPath, { persist = true } = {}) {
   const raw = expandHome(inputPath);
 
   if (!raw) {
@@ -324,13 +520,18 @@ export async function attachCodebase(inputPath) {
     canonical,
     ...recentCodebases.filter((candidate) => candidate !== canonical),
   ].slice(0, maxRecentCodebases);
-  await saveWorkspaceState();
+
+  if (persist) {
+    await saveWorkspaceState();
+  }
+
   return getWorkspaceSnapshot({ includeRecent: true });
 }
 
 export async function detachCodebase() {
   activeRepoRoot = null;
   activeRepoRootCanonical = null;
+  await saveWorkspaceState();
   return getWorkspaceSnapshot({ includeRecent: true });
 }
 
@@ -356,25 +557,10 @@ function parseToolArguments(rawArguments) {
 
 function isHidden(relativePath) {
   const rel = normalizeRelative(relativePath);
-  const segments = rel.split("/");
-  return hiddenPaths.some((hiddenPath) => (
-    rel === hiddenPath ||
-    rel.startsWith(`${hiddenPath}/`) ||
-    segments.includes(hiddenPath)
-  ));
-}
-
-function getRipgrepHiddenGlobs() {
-  return hiddenPaths.flatMap((hiddenPath) => [
-    "--glob",
-    `!${hiddenPath}`,
-    "--glob",
-    `!${hiddenPath}/**`,
-    "--glob",
-    `!**/${hiddenPath}`,
-    "--glob",
-    `!**/${hiddenPath}/**`,
-  ]);
+  const activeName = path.basename(activeRepoRoot);
+  const extraHiddenPaths = activeName === "ollama-chat" ? ["sessions"] : [];
+  const hidden = [...hiddenPaths, ...extraHiddenPaths];
+  return hidden.some((prefix) => rel === prefix || rel.startsWith(`${prefix}/`));
 }
 
 /** Ensures resolved paths cannot escape the repo via .. segments or symlink targets. */
@@ -462,6 +648,37 @@ function formatList(values) {
   return values.length ? `\n${values.join("\n")}` : "(none)";
 }
 
+function getRipgrepHiddenGlobs() {
+  return hiddenPaths.flatMap((hiddenPath) => [
+    "--glob",
+    `!${hiddenPath}`,
+    "--glob",
+    `!${hiddenPath}/**`,
+    "--glob",
+    `!**/${hiddenPath}`,
+    "--glob",
+    `!**/${hiddenPath}/**`,
+  ]);
+}
+
+function uniq(values) {
+  return [...new Set(values.filter(Boolean))];
+}
+
+function pickExisting(files, candidates) {
+  const fileSet = new Set(files);
+  return candidates.filter((candidate) => fileSet.has(candidate));
+}
+
+function pickByBasename(files, basenames) {
+  const wanted = new Set(basenames);
+  return files.filter((file) => wanted.has(path.basename(file)));
+}
+
+function pickByPattern(files, patterns, limit = 40) {
+  return files.filter((file) => patterns.some((pattern) => pattern.test(file))).slice(0, limit);
+}
+
 async function listRepoFilePaths(maxResults = 500) {
   const { root } = getActiveRepoRoot();
 
@@ -527,24 +744,6 @@ async function listRepoFilePaths(maxResults = 500) {
   return files;
 }
 
-function uniq(values) {
-  return [...new Set(values.filter(Boolean))];
-}
-
-function pickExisting(files, candidates) {
-  const fileSet = new Set(files);
-  return candidates.filter((candidate) => fileSet.has(candidate));
-}
-
-function pickByBasename(files, basenames) {
-  const wanted = new Set(basenames);
-  return files.filter((file) => wanted.has(path.basename(file)));
-}
-
-function pickByPattern(files, patterns, limit = 40) {
-  return files.filter((file) => patterns.some((pattern) => pattern.test(file))).slice(0, limit);
-}
-
 async function readJsonFileIfPresent(repoPath) {
   const result = await readRepoText({ path: repoPath, start_line: 1, end_line: 220 });
 
@@ -564,14 +763,14 @@ function inferStack(files, packageJsons) {
   const depNames = new Set();
 
   for (const packageJson of packageJsons) {
-    const dependencies = Array.isArray(packageJson.dependencies)
-      ? packageJson.dependencies
-      : Object.keys(packageJson.dependencies || {});
-    const devDependencies = Array.isArray(packageJson.devDependencies)
-      ? packageJson.devDependencies
-      : Object.keys(packageJson.devDependencies || {});
-
-    for (const dependency of [...dependencies, ...devDependencies]) {
+    for (const dependency of [
+      ...(Array.isArray(packageJson.dependencies)
+        ? packageJson.dependencies
+        : Object.keys(packageJson.dependencies || {})),
+      ...(Array.isArray(packageJson.devDependencies)
+        ? packageJson.devDependencies
+        : Object.keys(packageJson.devDependencies || {})),
+    ]) {
       depNames.add(dependency);
     }
   }
@@ -629,7 +828,6 @@ function getImportantFileCandidates(files) {
       "src/main.jsx",
       "src/main.ts",
       "src/main.tsx",
-      "src/App.js",
       "src/App.jsx",
       "src/App.tsx",
       "app/page.tsx",
@@ -638,59 +836,6 @@ function getImportantFileCandidates(files) {
     ]),
     ...pickByBasename(files, ["package.json", "README.md"]).slice(0, 8),
   ]).slice(0, 18);
-}
-
-function createSearchMatcher(query) {
-  try {
-    return new RegExp(query, query === query.toLowerCase() ? "i" : "");
-  } catch {
-    const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    return new RegExp(escaped, query === query.toLowerCase() ? "i" : "");
-  }
-}
-
-async function searchRepoWithoutRipgrep({ query, rel, maxResults }) {
-  const files = await listRepoFilePaths(1200);
-  const matcher = createSearchMatcher(query);
-  const scopedFiles = rel === "."
-    ? files
-    : files.filter((file) => file === rel || file.startsWith(`${rel}/`));
-  const matches = [];
-
-  for (const repoPath of scopedFiles) {
-    if (matches.length >= maxResults) {
-      break;
-    }
-
-    const { abs } = resolveRepoPath(repoPath);
-    let raw;
-
-    try {
-      raw = await readFile(abs, "utf8");
-    } catch {
-      continue;
-    }
-
-    if (raw.includes("\u0000")) {
-      continue;
-    }
-
-    const lines = raw.split("\n");
-
-    for (const [index, line] of lines.entries()) {
-      matcher.lastIndex = 0;
-
-      if (matcher.test(line)) {
-        matches.push(`${repoPath}:${index + 1}:${line}`);
-      }
-
-      if (matches.length >= maxResults) {
-        break;
-      }
-    }
-  }
-
-  return matches;
 }
 
 async function getTargetInfo(abs) {
@@ -710,14 +855,7 @@ async function getTargetInfo(abs) {
 }
 
 export async function findRepoPathCandidates(input, maxResults = 5) {
-  let root;
-
-  try {
-    ({ root } = getActiveRepoRoot());
-  } catch {
-    return [];
-  }
-
+  const { root } = getActiveRepoRoot();
   const raw = String(input || "").trim();
 
   if (!raw) {
@@ -734,7 +872,18 @@ export async function findRepoPathCandidates(input, maxResults = 5) {
     const { stdout } = await execFileAsync("rg", [
       "--files",
       "--hidden",
-      ...getRipgrepHiddenGlobs(),
+      "--glob",
+      "!.git",
+      "--glob",
+      "!.idea/**",
+      "--glob",
+      "!.vscode/**",
+      "--glob",
+      "!node_modules/**",
+      "--glob",
+      "!models/.ollama/**",
+      "--glob",
+      "!projects/ollama-chat/sessions/**",
       root,
     ]);
 
@@ -762,6 +911,7 @@ export async function findRepoPathCandidates(input, maxResults = 5) {
 
 export async function listRepoEntries(rawArgs = {}) {
   const args = parseToolArguments(rawArgs);
+  const { limits } = getToolRuntimeConfig();
   let abs;
   let rel;
 
@@ -774,8 +924,8 @@ export async function listRepoEntries(rawArgs = {}) {
       message: error.message,
     };
   }
-  const maxDepth = Math.min(Math.max(toInt(args.depth, 1), 0), 4);
-  const maxEntries = Math.min(Math.max(toInt(args.max_entries, 60), 1), 200);
+  const maxDepth = Math.min(Math.max(toInt(args.depth, 1), 0), limits.maxListDepth);
+  const maxEntries = Math.min(Math.max(toInt(args.max_entries, 60), 1), limits.maxListEntries);
   const entries = [];
   const info = await getTargetInfo(abs);
 
@@ -843,6 +993,7 @@ export async function listRepoEntries(rawArgs = {}) {
 
 export async function readRepoText(rawArgs = {}) {
   const args = parseToolArguments(rawArgs);
+  const { limits } = getToolRuntimeConfig();
   let abs;
   let rel;
 
@@ -857,7 +1008,7 @@ export async function readRepoText(rawArgs = {}) {
   }
   const startLine = Math.max(toInt(args.start_line, 1), 1);
   const requestedEnd = Math.max(toInt(args.end_line, startLine + 199), startLine);
-  const endLine = Math.min(requestedEnd, startLine + 249);
+  const endLine = Math.min(requestedEnd, startLine + limits.maxFileLines - 1);
   const info = await getTargetInfo(abs);
 
   if (!info.exists) {
@@ -909,6 +1060,8 @@ export async function readRepoText(rawArgs = {}) {
 
 export async function searchRepoMatches(rawArgs = {}) {
   const args = parseToolArguments(rawArgs);
+  const { limits } = getToolRuntimeConfig();
+  const { root } = getActiveRepoRoot();
   const query = String(args.query || "").trim();
 
   if (!query) {
@@ -933,7 +1086,7 @@ export async function searchRepoMatches(rawArgs = {}) {
     };
   }
 
-  const maxResults = Math.min(Math.max(toInt(args.max_results, 20), 1), 50);
+  const maxResults = Math.min(Math.max(toInt(args.max_results, 20), 1), limits.maxSearchResults);
   const targetInfo = await getTargetInfo(abs);
 
   if (!targetInfo.exists) {
@@ -946,12 +1099,22 @@ export async function searchRepoMatches(rawArgs = {}) {
   }
 
   try {
-    const { root } = getActiveRepoRoot();
     const { stdout } = await execFileAsync("rg", [
       "-n",
       "--hidden",
       "-S",
-      ...getRipgrepHiddenGlobs(),
+      "--glob",
+      "!.git",
+      "--glob",
+      "!.idea/**",
+      "--glob",
+      "!.vscode/**",
+      "--glob",
+      "!node_modules/**",
+      "--glob",
+      "!models/.ollama/**",
+      "--glob",
+      "!projects/ollama-chat/sessions/**",
       "--max-count",
       String(maxResults),
       "--",
@@ -991,24 +1154,8 @@ export async function searchRepoMatches(rawArgs = {}) {
       };
     }
 
-    if (error?.code !== "ENOENT") {
-      throw error;
-    }
+    throw error;
   }
-
-  const matches = await searchRepoWithoutRipgrep({ query, rel, maxResults });
-
-  return {
-    status: "OK",
-    path: rel,
-    query,
-    targetExists: true,
-    targetKind: targetInfo.kind,
-    matchCount: matches.length,
-    capped: matches.length >= maxResults,
-    note: "Used built-in search because ripgrep was not available.",
-    matches,
-  };
 }
 
 export async function inspectDependencyManifests() {
@@ -1066,58 +1213,53 @@ export async function findRepoEntrypoints() {
     }
   }
 
-  const configs = pickByPattern(files, [
-    /(^|\/)vite\.config\.[cm]?[jt]s$/,
-    /(^|\/)next\.config\.[cm]?js$/,
-    /(^|\/)astro\.config\.mjs$/,
-    /(^|\/)svelte\.config\.[cm]?js$/,
-    /(^|\/)tailwind\.config\.[cm]?[jt]s$/,
-    /(^|\/)tsconfig\.json$/,
-  ]);
-  const appRoots = pickExisting(files, [
-    "index.html",
-    "src/main.js",
-    "src/main.jsx",
-    "src/main.ts",
-    "src/main.tsx",
-    "src/App.js",
-    "src/App.jsx",
-    "src/App.tsx",
-    "app/page.js",
-    "app/page.jsx",
-    "app/page.tsx",
-    "pages/index.js",
-    "pages/index.jsx",
-    "pages/index.tsx",
-  ]);
-  const routes = pickByPattern(files, [
-    /^app\/.*\/page\.[jt]sx?$/,
-    /^pages\/.*\.[jt]sx?$/,
-    /^src\/routes\/.*\.[jt]sx?$/,
-  ], 30);
-  const serverFiles = pickByPattern(files, [
-    /(^|\/)(server|app|index|main)\.[cm]?[jt]s$/,
-    /(^|\/)api\/.*\.[jt]s$/,
-  ], 30);
-
   return {
     status: "OK",
     packageScripts: scripts,
-    configs,
-    appRoots,
-    routes,
-    serverFiles,
+    configs: pickByPattern(files, [
+      /(^|\/)vite\.config\.[cm]?[jt]s$/,
+      /(^|\/)next\.config\.[cm]?js$/,
+      /(^|\/)astro\.config\.mjs$/,
+      /(^|\/)svelte\.config\.[cm]?js$/,
+      /(^|\/)tailwind\.config\.[cm]?[jt]s$/,
+      /(^|\/)tsconfig\.json$/,
+    ]),
+    appRoots: pickExisting(files, [
+      "index.html",
+      "src/main.js",
+      "src/main.jsx",
+      "src/main.ts",
+      "src/main.tsx",
+      "src/App.js",
+      "src/App.jsx",
+      "src/App.tsx",
+      "app/page.js",
+      "app/page.jsx",
+      "app/page.tsx",
+      "pages/index.js",
+      "pages/index.jsx",
+      "pages/index.tsx",
+    ]),
+    routes: pickByPattern(files, [
+      /^app\/.*\/page\.[jt]sx?$/,
+      /^pages\/.*\.[jt]sx?$/,
+      /^src\/routes\/.*\.[jt]sx?$/,
+    ], 30),
+    serverFiles: pickByPattern(files, [
+      /(^|\/)(server|app|index|main)\.[cm]?[jt]s$/,
+      /(^|\/)api\/.*\.[jt]s$/,
+    ], 30),
   };
 }
 
 export async function getRepoOverview(rawArgs = {}) {
   const args = parseToolArguments(rawArgs);
-  const maxEntries = Math.min(Math.max(toInt(args.max_entries, 80), 20), 160);
+  const { limits } = getToolRuntimeConfig();
+  const maxEntries = Math.min(Math.max(toInt(args.max_entries, 80), 20), limits.maxListEntries);
   const files = await listRepoFilePaths(1000);
   const topLevel = await listRepoEntries({ path: ".", depth: 1, max_entries: maxEntries });
   const dependencies = await inspectDependencyManifests();
   const entrypoints = await findRepoEntrypoints();
-  const importantFiles = getImportantFileCandidates(files);
 
   return {
     status: "OK",
@@ -1136,14 +1278,15 @@ export async function getRepoOverview(rawArgs = {}) {
       ...entrypoints.routes.slice(0, 12),
       ...entrypoints.serverFiles.slice(0, 12),
     ]),
-    importantFiles,
+    importantFiles: getImportantFileCandidates(files),
   };
 }
 
 export async function readManyRepoFiles(rawArgs = {}) {
   const args = parseToolArguments(rawArgs);
   const paths = Array.isArray(args.paths) ? args.paths.slice(0, 8) : [];
-  const maxLines = Math.min(Math.max(toInt(args.max_lines_per_file, 80), 10), 160);
+  const { limits } = getToolRuntimeConfig();
+  const maxLines = Math.min(Math.max(toInt(args.max_lines_per_file, 80), 10), limits.maxFileLines);
 
   if (!paths.length) {
     return {
@@ -1156,13 +1299,11 @@ export async function readManyRepoFiles(rawArgs = {}) {
   const files = [];
 
   for (const repoPath of paths) {
-    const result = await readRepoText({
+    files.push(await readRepoText({
       path: repoPath,
       start_line: 1,
       end_line: maxLines,
-    });
-
-    files.push(result);
+    }));
   }
 
   return {
@@ -1473,6 +1614,13 @@ const toolHandlers = {
 export async function executeToolCall(toolCall) {
   const name = toolCall?.function?.name;
   const handler = toolHandlers[name];
+
+  if (name && !isToolEnabled(name)) {
+    return formatToolResult(name, [
+      ["STATUS", "ERROR"],
+      ["MESSAGE", `Tool is disabled by the active tooling profile: ${name}`],
+    ]);
+  }
 
   if (!handler) {
     return formatToolResult("unknown_tool", [

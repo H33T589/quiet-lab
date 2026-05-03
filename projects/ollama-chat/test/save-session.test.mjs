@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import path from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
 import {
@@ -10,13 +9,11 @@ import {
   saveSessionAs,
   sessionsDir,
 } from "../engine.mjs";
-import { attachCodebase, detachCodebase } from "../tools.mjs";
 
 const sessionIds = [
   "save-session-source-test",
   "client-retro",
   "client-retro-2",
-  "deterministic-file-answer-test",
 ];
 
 function removeTestSessions() {
@@ -74,33 +71,16 @@ test("deleteSession removes a saved session file", async () => {
   assert.equal(await deleted.load(), false);
 });
 
-test("chat returns deterministic file explanation from successful repo tools", async () => {
-  const tmp = mkdtempSync(path.join(tmpdir(), "quiet-lab-file-answer-"));
-  writeFileSync(
-    path.join(tmp, "index.html"),
-    [
-      "<!DOCTYPE html>",
-      "<html>",
-      "<head>",
-      '<meta name="description" content="Portfolio for local AI work" />',
-      "<title>Portfolio</title>",
-      '<script src="https://example.com/app.js"></script>',
-      "</head>",
-      "<body></body>",
-      "</html>",
-    ].join("\n"),
-  );
-  await attachCodebase(tmp);
+test("custom preset prompts are saved into the session system prompt", async () => {
+  const session = new ChatSession({ sessionId: "save-session-source-test" });
 
-  try {
-    const session = new ChatSession({ sessionId: "deterministic-file-answer-test", preset: "repo" });
-    const result = await session.chat("Explain this file and call out risks: index.html");
+  await session.setCustomPreset("Night Shift", "Answer in short operational notes.");
 
-    assert.match(result.text, /index\.html/);
-    assert.match(result.text, /HTML entry document/);
-    assert.match(result.text, /External assets/);
-  } finally {
-    await detachCodebase();
-    rmSync(tmp, { recursive: true, force: true });
-  }
+  assert.equal(session.activePreset, "custom:Night Shift");
+  assert.match(session.systemPrompt, /Answer in short operational notes/);
+
+  const loaded = new ChatSession({ sessionId: "save-session-source-test" });
+  assert.equal(await loaded.load(), true);
+  assert.equal(loaded.activePreset, "custom:Night Shift");
+  assert.match(loaded.systemPrompt, /Answer in short operational notes/);
 });

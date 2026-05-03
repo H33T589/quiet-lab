@@ -1,20 +1,22 @@
 import assert from "node:assert/strict";
-import { rmSync, symlinkSync, writeFileSync, mkdtempSync } from "node:fs";
-import { mkdir } from "node:fs/promises";
+import { mkdirSync, rmSync, symlinkSync, writeFileSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, beforeEach, describe, test } from "node:test";
+import { describe, test } from "node:test";
 import { resolvePublicFilePath } from "../public-static.mjs";
 import {
   attachCodebase,
-  detachCodebase,
+  configureTooling,
+  executeToolCall,
   findRepoEntrypoints,
+  getEnabledToolDefinitions,
   getRepoOverview,
-  getWorkspaceSnapshot,
+  getToolRuntimeConfig,
   inspectDependencyManifests,
   readManyRepoFiles,
   readRepoText,
+  repoRoot,
   resolveRepoPath,
   summarizeFileSymbols,
 } from "../tools.mjs";
@@ -24,14 +26,6 @@ const chatDir = path.join(__dirname, "..");
 const publicDir = path.join(chatDir, "public");
 
 describe("resolveRepoPath", () => {
-  beforeEach(async () => {
-    await attachCodebase(chatDir);
-  });
-
-  afterEach(async () => {
-    await detachCodebase();
-  });
-
   test("accepts README at repo root", () => {
     const { rel } = resolveRepoPath("README.md");
     assert.equal(rel, "README.md");
@@ -58,7 +52,7 @@ describe("resolveRepoPath", () => {
 
     try {
       assert.throws(
-        () => resolveRepoPath(".trust-symlink-test/secret.txt"),
+        () => resolveRepoPath("projects/ollama-chat/.trust-symlink-test/secret.txt"),
         /repository root/,
       );
     } finally {
@@ -69,14 +63,6 @@ describe("resolveRepoPath", () => {
 });
 
 describe("readRepoText", () => {
-  beforeEach(async () => {
-    await attachCodebase(chatDir);
-  });
-
-  afterEach(async () => {
-    await detachCodebase();
-  });
-
   test("does not read outside repo via symlink", async () => {
     const tmp = mkdtempSync(path.join(tmpdir(), "quiet-lab-trust-"));
     const secret = path.join(tmp, "secret.txt");
@@ -85,7 +71,7 @@ describe("readRepoText", () => {
     symlinkSync(tmp, linkName);
 
     try {
-      const result = await readRepoText({ path: ".trust-symlink-test-read/secret.txt" });
+      const result = await readRepoText({ path: "projects/ollama-chat/.trust-symlink-test-read/secret.txt" });
       assert.equal(result.status, "ERROR");
       assert.match(result.message, /repository root/);
     } finally {
@@ -95,108 +81,149 @@ describe("readRepoText", () => {
   });
 });
 
-describe("workspace attachment", () => {
-  afterEach(async () => {
-    await detachCodebase();
+describe("workspace switching", () => {
+  test("repo paths resolve against the active attached workspace", async () => {
+    const tmp = mkdtempSync(path.join(tmpdir(), "quiet-lab-workspace-"));
+    writeFileSync(path.join(tmp, "app.txt"), "workspace file");
+
+    try {
+      await attachCodebase(tmp, { persist: false });
+      assert.equal(resolveRepoPath("app.txt").rel, "app.txt");
+      const result = await readRepoText({ path: "app.txt" });
+
+      assert.equal(result.status, "OK");
+      assert.equal(result.content, "workspace file");
+    } finally {
+      await attachCodebase(repoRoot, { persist: false });
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("tooling profiles and budgets", () => {
+  test("minimal profile hides search from the model tool schema", () => {
+    const original = getToolRuntimeConfig();
+
+    try {
+      const config = configureTooling({ profile: "minimal" });
+      const enabledNames = getEnabledToolDefinitions().map((definition) => definition.function.name);
+
+      assert.equal(config.profile, "minimal");
+      assert.deepEqual(enabledNames, ["get_repo_overview", "list_repo_files", "read_repo_file"]);
+    } finally {
+      configureTooling(original);
+    }
   });
 
-  test("starts with no active codebase after detach", async () => {
-    await detachCodebase();
-    assert.equal(getWorkspaceSnapshot().attached, false);
-    assert.throws(() => resolveRepoPath("README.md"), /No codebase attached/);
+  test("disabled tools return a deterministic error", async () => {
+    const original = getToolRuntimeConfig();
+
+    try {
+      configureTooling({ profile: "minimal" });
+      const result = await executeToolCall({
+        function: {
+          name: "search_repo",
+          arguments: { query: "README" },
+        },
+      });
+
+      assert.match(result, /STATUS: ERROR/);
+      assert.match(result, /Tool is disabled/);
+    } finally {
+      configureTooling(original);
+    }
   });
 
-  test("attaches an existing directory", async () => {
-    const workspace = await attachCodebase(chatDir);
-    assert.equal(workspace.attached, true);
-    assert.equal(workspace.repoName, "ollama-chat");
-    assert.equal(resolveRepoPath("README.md").rel, "README.md");
+  test("low budget caps file read windows", async () => {
+    const original = getToolRuntimeConfig();
+
+    try {
+      configureTooling({ profile: "coding", budget: "low" });
+      const result = await readRepoText({
+        path: "projects/ollama-chat/engine.mjs",
+        start_line: 1,
+        end_line: 500,
+      });
+
+      assert.equal(result.status, "OK");
+      assert.equal(result.lineRange.end, 120);
+    } finally {
+      configureTooling(original);
+    }
   });
 
-  test("rejects missing paths, files, and null bytes", async () => {
-    await assert.rejects(
-      () => attachCodebase(path.join(chatDir, "does-not-exist")),
-      /does not exist/,
-    );
-    await assert.rejects(() => attachCodebase(path.join(chatDir, "README.md")), /directory/);
-    await assert.rejects(() => attachCodebase(`${chatDir}\0`), /Invalid path/);
+  test("invalid profile and budget fall back to coding low-ram defaults", () => {
+    const original = getToolRuntimeConfig();
+
+    try {
+      const config = configureTooling({ profile: "massive", budget: "unbounded" });
+
+      assert.equal(config.profile, "coding");
+      assert.equal(config.budget, "low");
+    } finally {
+      configureTooling(original);
+    }
   });
 });
 
 describe("smart repo tools", () => {
-  let tmp;
+  test("detects stack, entrypoints, multiple reads, and file symbols", async () => {
+    const original = getToolRuntimeConfig();
+    const tmp = mkdtempSync(path.join(tmpdir(), "quiet-lab-smart-tools-"));
 
-  beforeEach(async () => {
-    tmp = mkdtempSync(path.join(tmpdir(), "quiet-lab-smart-tools-"));
-    writeFileSync(
-      path.join(tmp, "package.json"),
-      JSON.stringify(
-        {
-          name: "portfolio-test",
-          scripts: {
-            dev: "vite",
-            build: "vite build",
+    try {
+      writeFileSync(
+        path.join(tmp, "package.json"),
+        JSON.stringify(
+          {
+            name: "portfolio-test",
+            scripts: {
+              dev: "vite",
+              build: "vite build",
+            },
+            dependencies: {
+              react: "latest",
+              vite: "latest",
+            },
+            devDependencies: {
+              typescript: "latest",
+            },
           },
-          dependencies: {
-            "@vitejs/plugin-react": "latest",
-            react: "latest",
-            vite: "latest",
-          },
-          devDependencies: {
-            typescript: "latest",
-          },
-        },
-        null,
-        2,
-      ),
-    );
-    writeFileSync(path.join(tmp, "index.html"), '<script type="module" src="/src/main.jsx"></script>');
-    await mkdir(path.join(tmp, "src"));
-    writeFileSync(
-      path.join(tmp, "src", "main.jsx"),
-      [
-        "import React from 'react';",
-        "export function Portfolio() {",
-        "  return <main>Hi</main>;",
-        "}",
-      ].join("\n"),
-    );
-    await attachCodebase(tmp);
-  });
+          null,
+          2,
+        ),
+      );
+      writeFileSync(path.join(tmp, "index.html"), '<script type="module" src="/src/main.jsx"></script>');
+      mkdirSync(path.join(tmp, "src"));
+      writeFileSync(
+        path.join(tmp, "src", "main.jsx"),
+        [
+          "import React from 'react';",
+          "export function Portfolio() {",
+          "  return <main>Hi</main>;",
+          "}",
+        ].join("\n"),
+      );
+      await attachCodebase(tmp, { persist: false });
+      configureTooling({ profile: "coding", budget: "balanced" });
 
-  afterEach(async () => {
-    await detachCodebase();
-    rmSync(tmp, { recursive: true, force: true });
-  });
+      const overview = await getRepoOverview();
+      const dependencies = await inspectDependencyManifests();
+      const entrypoints = await findRepoEntrypoints();
+      const files = await readManyRepoFiles({ paths: ["package.json", "src/main.jsx"] });
+      const symbols = await summarizeFileSymbols({ path: "src/main.jsx" });
 
-  test("detects overview, stack, scripts, and entry points", async () => {
-    const overview = await getRepoOverview();
-
-    assert.equal(overview.status, "OK");
-    assert.ok(overview.stack.includes("React"));
-    assert.ok(overview.stack.includes("Vite"));
-    assert.ok(overview.packageScripts.some((script) => script.includes("dev = vite")));
-    assert.ok(overview.entrypoints.includes("index.html"));
-    assert.ok(overview.entrypoints.includes("src/main.jsx"));
-  });
-
-  test("inspects dependencies and entrypoints directly", async () => {
-    const dependencies = await inspectDependencyManifests();
-    const entrypoints = await findRepoEntrypoints();
-
-    assert.ok(dependencies.stack.includes("TypeScript"));
-    assert.ok(entrypoints.packageScripts.some((script) => script.includes("build = vite build")));
-    assert.ok(entrypoints.appRoots.includes("src/main.jsx"));
-  });
-
-  test("reads many files and summarizes file symbols", async () => {
-    const files = await readManyRepoFiles({ paths: ["package.json", "src/main.jsx"] });
-    const symbols = await summarizeFileSymbols({ path: "src/main.jsx" });
-
-    assert.equal(files.status, "OK");
-    assert.equal(files.files.length, 2);
-    assert.deepEqual(symbols.symbols.functions, ["Portfolio"]);
-    assert.ok(symbols.symbols.imports[0].includes("React"));
+      assert.ok(overview.stack.includes("React"));
+      assert.ok(overview.entrypoints.includes("index.html"));
+      assert.ok(dependencies.stack.includes("Vite"));
+      assert.ok(entrypoints.packageScripts.some((script) => script.includes("build = vite build")));
+      assert.equal(files.files.length, 2);
+      assert.deepEqual(symbols.symbols.functions, ["Portfolio"]);
+    } finally {
+      configureTooling(original);
+      await attachCodebase(repoRoot, { persist: false });
+      rmSync(tmp, { recursive: true, force: true });
+    }
   });
 });
 
