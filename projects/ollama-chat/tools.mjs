@@ -37,6 +37,77 @@ const toolDescriptions = {
     "Search repository files for a string or regex pattern. Use this only to locate unknown text or symbols.",
 };
 
+const toolCatalog = {
+  list_repo_files: {
+    category: "repo",
+    cost: "low",
+    description: toolDescriptions.list_repo_files,
+  },
+  read_repo_file: {
+    category: "repo",
+    cost: "medium",
+    description: toolDescriptions.read_repo_file,
+  },
+  search_repo: {
+    category: "repo",
+    cost: "medium",
+    description: toolDescriptions.search_repo,
+  },
+};
+
+export const resourceBudgets = {
+  low: {
+    label: "Low RAM",
+    maxToolRounds: 1,
+    maxBootstrapCalls: 2,
+    maxListDepth: 2,
+    maxListEntries: 80,
+    maxFileLines: 120,
+    maxSearchResults: 20,
+  },
+  balanced: {
+    label: "Balanced",
+    maxToolRounds: 3,
+    maxBootstrapCalls: 4,
+    maxListDepth: 3,
+    maxListEntries: 120,
+    maxFileLines: 200,
+    maxSearchResults: 35,
+  },
+  expanded: {
+    label: "More Context",
+    maxToolRounds: 5,
+    maxBootstrapCalls: 6,
+    maxListDepth: 4,
+    maxListEntries: 200,
+    maxFileLines: 250,
+    maxSearchResults: 50,
+  },
+};
+
+export const toolProfiles = {
+  minimal: {
+    label: "Minimal",
+    budget: "low",
+    enabledTools: ["list_repo_files", "read_repo_file"],
+  },
+  coding: {
+    label: "Coding",
+    budget: "low",
+    enabledTools: ["list_repo_files", "read_repo_file", "search_repo"],
+  },
+  deep: {
+    label: "Deep",
+    budget: "expanded",
+    enabledTools: ["list_repo_files", "read_repo_file", "search_repo"],
+  },
+};
+
+let toolRuntimeConfig = normalizeToolRuntimeConfig({
+  profile: process.env.OLLAMA_TOOL_PROFILE || "coding",
+  budget: process.env.OLLAMA_RESOURCE_BUDGET || null,
+});
+
 export const toolDefinitions = [
   {
     type: "function",
@@ -114,8 +185,72 @@ export const toolDefinitions = [
   },
 ];
 
-export function listTools() {
-  return Object.entries(toolDescriptions)
+function normalizeToolRuntimeConfig(rawConfig = {}) {
+  const requestedProfile = String(rawConfig.profile || "coding").trim();
+  const profileName = Object.hasOwn(toolProfiles, requestedProfile) ? requestedProfile : "coding";
+  const profile = toolProfiles[profileName];
+  const requestedBudget = String(rawConfig.budget || profile.budget).trim();
+  const budgetName = Object.hasOwn(resourceBudgets, requestedBudget)
+    ? requestedBudget
+    : profile.budget;
+  const allowedTools = new Set(Object.keys(toolCatalog));
+  const requestedTools = Array.isArray(rawConfig.enabledTools)
+    ? rawConfig.enabledTools
+    : profile.enabledTools;
+  const enabledTools = requestedTools.filter((name) => allowedTools.has(name));
+
+  return {
+    profile: profileName,
+    budget: budgetName,
+    enabledTools: enabledTools.length ? enabledTools : [...profile.enabledTools],
+    limits: resourceBudgets[budgetName],
+  };
+}
+
+export function configureTooling(rawConfig = {}) {
+  const nextConfig = { ...toolRuntimeConfig, ...rawConfig };
+
+  if (Object.hasOwn(rawConfig, "profile") && !Object.hasOwn(rawConfig, "enabledTools")) {
+    delete nextConfig.enabledTools;
+  }
+
+  toolRuntimeConfig = normalizeToolRuntimeConfig({
+    ...nextConfig,
+  });
+  return getToolRuntimeConfig();
+}
+
+export function getToolRuntimeConfig() {
+  return {
+    ...toolRuntimeConfig,
+    enabledTools: [...toolRuntimeConfig.enabledTools],
+    limits: { ...toolRuntimeConfig.limits },
+  };
+}
+
+export function isToolEnabled(name) {
+  return toolRuntimeConfig.enabledTools.includes(name);
+}
+
+export function getEnabledToolDefinitions() {
+  const enabled = new Set(toolRuntimeConfig.enabledTools);
+  return toolDefinitions.filter((definition) => enabled.has(definition.function.name));
+}
+
+export function listToolCatalog() {
+  return Object.entries(toolCatalog).map(([name, metadata]) => ({
+    name,
+    ...metadata,
+    enabled: isToolEnabled(name),
+  }));
+}
+
+export function listTools({ enabledOnly = false } = {}) {
+  const entries = enabledOnly
+    ? Object.entries(toolDescriptions).filter(([name]) => isToolEnabled(name))
+    : Object.entries(toolDescriptions);
+
+  return entries
     .map(([name, description]) => `${name}: ${description}`)
     .join("\n");
 }
@@ -300,6 +435,7 @@ export async function findRepoPathCandidates(input, maxResults = 5) {
 
 export async function listRepoEntries(rawArgs = {}) {
   const args = parseToolArguments(rawArgs);
+  const { limits } = getToolRuntimeConfig();
   let abs;
   let rel;
 
@@ -312,8 +448,8 @@ export async function listRepoEntries(rawArgs = {}) {
       message: error.message,
     };
   }
-  const maxDepth = Math.min(Math.max(toInt(args.depth, 1), 0), 4);
-  const maxEntries = Math.min(Math.max(toInt(args.max_entries, 60), 1), 200);
+  const maxDepth = Math.min(Math.max(toInt(args.depth, 1), 0), limits.maxListDepth);
+  const maxEntries = Math.min(Math.max(toInt(args.max_entries, 60), 1), limits.maxListEntries);
   const entries = [];
   const info = await getTargetInfo(abs);
 
@@ -381,6 +517,7 @@ export async function listRepoEntries(rawArgs = {}) {
 
 export async function readRepoText(rawArgs = {}) {
   const args = parseToolArguments(rawArgs);
+  const { limits } = getToolRuntimeConfig();
   let abs;
   let rel;
 
@@ -395,7 +532,7 @@ export async function readRepoText(rawArgs = {}) {
   }
   const startLine = Math.max(toInt(args.start_line, 1), 1);
   const requestedEnd = Math.max(toInt(args.end_line, startLine + 199), startLine);
-  const endLine = Math.min(requestedEnd, startLine + 249);
+  const endLine = Math.min(requestedEnd, startLine + limits.maxFileLines - 1);
   const info = await getTargetInfo(abs);
 
   if (!info.exists) {
@@ -447,6 +584,7 @@ export async function readRepoText(rawArgs = {}) {
 
 export async function searchRepoMatches(rawArgs = {}) {
   const args = parseToolArguments(rawArgs);
+  const { limits } = getToolRuntimeConfig();
   const query = String(args.query || "").trim();
 
   if (!query) {
@@ -471,7 +609,7 @@ export async function searchRepoMatches(rawArgs = {}) {
     };
   }
 
-  const maxResults = Math.min(Math.max(toInt(args.max_results, 20), 1), 50);
+  const maxResults = Math.min(Math.max(toInt(args.max_results, 20), 1), limits.maxSearchResults);
   const targetInfo = await getTargetInfo(abs);
 
   if (!targetInfo.exists) {
@@ -636,6 +774,13 @@ const toolHandlers = {
 export async function executeToolCall(toolCall) {
   const name = toolCall?.function?.name;
   const handler = toolHandlers[name];
+
+  if (name && !isToolEnabled(name)) {
+    return formatToolResult(name, [
+      ["STATUS", "ERROR"],
+      ["MESSAGE", `Tool is disabled by the active tooling profile: ${name}`],
+    ]);
+  }
 
   if (!handler) {
     return formatToolResult("unknown_tool", [

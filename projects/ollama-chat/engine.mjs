@@ -5,9 +5,11 @@ import { listPresets, resolvePreset } from "./presets.mjs";
 import {
   executeToolCall,
   findRepoPathCandidates,
+  getEnabledToolDefinitions,
+  getToolRuntimeConfig,
+  isToolEnabled,
   listTools,
   repoRoot,
-  toolDefinitions,
 } from "./tools.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -15,18 +17,19 @@ export const sessionsDir = path.join(__dirname, "sessions");
 
 const defaultBaseUrl = process.env.OLLAMA_BASE_URL || "http://127.0.0.1:11434";
 const defaultModel = process.env.OLLAMA_MODEL || "llama3.2:3b";
-const maxToolRounds = 5;
-
 function createBasePrompt(preset, systemPromptOverride = null) {
   return systemPromptOverride || resolvePreset(preset) || resolvePreset("coder");
 }
 
 function buildSystemPrompt(prompt) {
+  const toolConfig = getToolRuntimeConfig();
+
   return [
     prompt,
     `You are operating inside the local repository "${path.basename(repoRoot)}".`,
     `Tool paths are repository-relative from the workspace root "${path.basename(repoRoot)}" — do not use absolute filesystem paths.`,
     "You have read-only tools for repository inspection.",
+    `Active tool mode: ${toolConfig.profile}; resource budget: ${toolConfig.budget}. Keep tool use small and ask for narrower context when evidence is insufficient.`,
     "For non-repository questions, answer normally in the active preset voice and do not mention repo tools unless the user asked about the repository or you actually used them.",
     "Use tools when the user asks about files, code, structure, paths, presets, README contents, or anything repo-specific.",
     "Prefer list_repo_files for directory structure, read_repo_file for specific files, and search_repo only when you need to locate unknown text or symbols.",
@@ -35,8 +38,8 @@ function buildSystemPrompt(prompt) {
     "Never output shell commands, pseudo-terminal output, or fake command traces.",
     "If a tool returns zero matches, say exactly that. Do not convert zero matches into 'file does not exist' unless the tool explicitly says the target path is missing.",
     "If the repo evidence is incomplete, say so directly instead of filling gaps with guesses.",
-    "Available tools:",
-    listTools(),
+    "Enabled tools:",
+    listTools({ enabledOnly: true }),
   ].join("\n\n");
 }
 
@@ -79,8 +82,13 @@ async function buildBootstrapContext(userInput) {
   const bootstrap = [];
   const seen = new Set();
   const lowered = userInput.toLowerCase();
+  const { limits } = getToolRuntimeConfig();
 
   function addToolCall(name, args) {
+    if (bootstrap.length >= limits.maxBootstrapCalls || !isToolEnabled(name)) {
+      return;
+    }
+
     const key = `${name}:${JSON.stringify(args)}`;
 
     if (seen.has(key)) {
@@ -390,7 +398,7 @@ async function requestAssistant({
         model,
         stream,
         messages: messagesForRequest,
-        ...(includeTools ? { tools: toolDefinitions } : {}),
+        ...(includeTools ? { tools: getEnabledToolDefinitions() } : {}),
       }),
     });
   } catch {
@@ -676,7 +684,9 @@ export class ChatSession {
       return { text: bootstrapAnswer, toolEvents };
     }
 
-    for (let round = 0; round < maxToolRounds; round += 1) {
+    const { limits } = getToolRuntimeConfig();
+
+    for (let round = 0; round < limits.maxToolRounds; round += 1) {
       const assistant = await requestAssistant({
         baseUrl: this.baseUrl,
         model: this.model,

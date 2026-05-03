@@ -8,6 +8,7 @@ It now supports:
 - auto-saved local session history
 - preset system prompts for different modes
 - read-only repository tools for file listing, file reading, and search
+- configurable tool profiles and resource budgets for smaller local models
 - stricter grounded answers for repo questions
 - a local browser UI with sessions, repo browsing, and tool activity
 
@@ -50,6 +51,8 @@ http://127.0.0.1:4317
 - `OLLAMA_CHAT_PORT`: defaults to `4317`
 - `OLLAMA_SYSTEM`: optional system prompt
 - `OLLAMA_PRESET`: default preset if no CLI preset is passed
+- `OLLAMA_TOOL_PROFILE`: `minimal`, `coding`, or `deep`; defaults to `coding`
+- `OLLAMA_RESOURCE_BUDGET`: `low`, `balanced`, or `expanded`; defaults to the profile budget
 
 ## Commands
 
@@ -94,6 +97,14 @@ The model can use a small set of read-only tools inside this repository:
 - `search_repo`
 
 These tools are intentionally limited to the repository root. They do not write files, run shell commands, or access hidden local model data under `models/.ollama/`.
+
+Tooling is now routed through profiles and resource budgets so small Ollama models do not receive every possible tool or oversized results. The default `coding` profile keeps all current repo tools available but uses the `low` budget:
+
+- `minimal`: file listing and file reading only
+- `coding`: file listing, file reading, and search
+- `deep`: all repo tools with a larger context budget
+
+Budgets cap tool rounds, preloaded context, directory entries, file lines, and search results. The browser backend exposes `/api/tooling` so a future settings panel can switch profiles without changing the model-facing architecture.
 
 For repo questions, the CLI now hides the model's pre-tool chatter and only shows explicit tool calls plus the grounded answer. This reduces fake shell-style narration and makes wrong inferences easier to spot.
 

@@ -5,7 +5,14 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, test } from "node:test";
 import { resolvePublicFilePath } from "../public-static.mjs";
-import { readRepoText, resolveRepoPath } from "../tools.mjs";
+import {
+  configureTooling,
+  executeToolCall,
+  getEnabledToolDefinitions,
+  getToolRuntimeConfig,
+  readRepoText,
+  resolveRepoPath,
+} from "../tools.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const chatDir = path.join(__dirname, "..");
@@ -63,6 +70,72 @@ describe("readRepoText", () => {
     } finally {
       rmSync(linkName);
       rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("tooling profiles and budgets", () => {
+  test("minimal profile hides search from the model tool schema", () => {
+    const original = getToolRuntimeConfig();
+
+    try {
+      const config = configureTooling({ profile: "minimal" });
+      const enabledNames = getEnabledToolDefinitions().map((definition) => definition.function.name);
+
+      assert.equal(config.profile, "minimal");
+      assert.deepEqual(enabledNames, ["list_repo_files", "read_repo_file"]);
+    } finally {
+      configureTooling(original);
+    }
+  });
+
+  test("disabled tools return a deterministic error", async () => {
+    const original = getToolRuntimeConfig();
+
+    try {
+      configureTooling({ profile: "minimal" });
+      const result = await executeToolCall({
+        function: {
+          name: "search_repo",
+          arguments: { query: "README" },
+        },
+      });
+
+      assert.match(result, /STATUS: ERROR/);
+      assert.match(result, /Tool is disabled/);
+    } finally {
+      configureTooling(original);
+    }
+  });
+
+  test("low budget caps file read windows", async () => {
+    const original = getToolRuntimeConfig();
+
+    try {
+      configureTooling({ profile: "coding", budget: "low" });
+      const result = await readRepoText({
+        path: "projects/ollama-chat/engine.mjs",
+        start_line: 1,
+        end_line: 500,
+      });
+
+      assert.equal(result.status, "OK");
+      assert.equal(result.lineRange.end, 120);
+    } finally {
+      configureTooling(original);
+    }
+  });
+
+  test("invalid profile and budget fall back to coding low-ram defaults", () => {
+    const original = getToolRuntimeConfig();
+
+    try {
+      const config = configureTooling({ profile: "massive", budget: "unbounded" });
+
+      assert.equal(config.profile, "coding");
+      assert.equal(config.budget, "low");
+    } finally {
+      configureTooling(original);
     }
   });
 });

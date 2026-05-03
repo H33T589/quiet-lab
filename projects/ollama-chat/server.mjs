@@ -17,11 +17,16 @@ import {
 import { listPresets } from "./presets.mjs";
 import { resolvePublicFilePath } from "./public-static.mjs";
 import {
+  configureTooling,
+  getToolRuntimeConfig,
   hiddenPaths,
+  listToolCatalog,
   listRepoEntries,
   listTools,
   readRepoText,
+  resourceBudgets,
   repoRoot,
+  toolProfiles,
 } from "./tools.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -113,12 +118,40 @@ async function handleMeta(_req, res) {
     presets: listPresets(),
     repoName: path.basename(repoRoot),
     sessions,
+    toolConfig: getToolRuntimeConfig(),
+    toolProfiles,
+    resourceBudgets,
     tools: listTools()
       .split("\n")
       .map((line) => {
         const [name, ...rest] = line.split(": ");
         return { name, description: rest.join(": ") };
       }),
+  });
+}
+
+async function handleTooling(req, res) {
+  if (req.method === "GET") {
+    sendJson(res, 200, {
+      config: getToolRuntimeConfig(),
+      profiles: toolProfiles,
+      budgets: resourceBudgets,
+      tools: listToolCatalog(),
+    });
+    return;
+  }
+
+  if (req.method !== "POST") {
+    sendMethodNotAllowed(res);
+    return;
+  }
+
+  const body = await readJsonBody(req);
+  sendJson(res, 200, {
+    config: configureTooling(body),
+    profiles: toolProfiles,
+    budgets: resourceBudgets,
+    tools: listToolCatalog(),
   });
 }
 
@@ -348,6 +381,11 @@ const server = http.createServer(async (req, res) => {
 
     if (pathname === "/api/meta" && req.method === "GET") {
       await handleMeta(req, res);
+      return;
+    }
+
+    if (pathname === "/api/tooling") {
+      await handleTooling(req, res);
       return;
     }
 
