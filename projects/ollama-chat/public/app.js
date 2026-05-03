@@ -428,7 +428,7 @@ function renderControlCenter() {
       Object.entries(profiles).map(([value, profile]) => ({
         value,
         label: profile.label || value,
-        description: `${profile.enabledTools?.length || 0} tools`,
+        description: `${profile.description || ""} ${profile.enabledTools?.length || 0} tools · ${profile.budget || "default"} budget`.trim(),
       })),
       config.profile,
       (profile) => updateTooling({ profile }).catch(showError),
@@ -439,7 +439,7 @@ function renderControlCenter() {
       Object.entries(budgets).map(([value, budget]) => ({
         value,
         label: budget.label || value,
-        description: `${budget.maxToolRounds} rounds · ${budget.maxFileLines} lines`,
+        description: `${budget.description || ""} ${budget.maxToolRounds} rounds · ${budget.maxFileLines} lines · ${budget.maxSearchResults} matches`.trim(),
       })),
       config.budget,
       (budget) => updateTooling({ budget }).catch(showError),

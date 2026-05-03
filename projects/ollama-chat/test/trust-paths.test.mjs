@@ -101,7 +101,7 @@ describe("workspace switching", () => {
 });
 
 describe("tooling profiles and budgets", () => {
-  test("minimal profile hides search from the model tool schema", () => {
+  test("lite profile hides search from the model tool schema", () => {
     const original = getToolRuntimeConfig();
 
     try {
@@ -110,6 +110,20 @@ describe("tooling profiles and budgets", () => {
 
       assert.equal(config.profile, "minimal");
       assert.deepEqual(enabledNames, ["get_repo_overview", "list_repo_files", "read_repo_file"]);
+    } finally {
+      configureTooling(original);
+    }
+  });
+
+  test("profile changes apply the profile recommended budget", () => {
+    const original = getToolRuntimeConfig();
+
+    try {
+      configureTooling({ profile: "deep", budget: "expanded" });
+      const config = configureTooling({ profile: "minimal" });
+
+      assert.equal(config.profile, "minimal");
+      assert.equal(config.budget, "low");
     } finally {
       configureTooling(original);
     }
@@ -152,13 +166,13 @@ describe("tooling profiles and budgets", () => {
     }
   });
 
-  test("invalid profile and budget fall back to coding low-ram defaults", () => {
+  test("invalid profile and budget fall back to explore low-ram defaults", () => {
     const original = getToolRuntimeConfig();
 
     try {
       const config = configureTooling({ profile: "massive", budget: "unbounded" });
 
-      assert.equal(config.profile, "coding");
+      assert.equal(config.profile, "explore");
       assert.equal(config.budget, "low");
     } finally {
       configureTooling(original);

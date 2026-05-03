@@ -100,6 +100,7 @@ const toolCatalog = {
 export const resourceBudgets = {
   low: {
     label: "Low RAM",
+    description: "Best for 3B models and 8GB machines.",
     maxToolRounds: 1,
     maxBootstrapCalls: 2,
     maxListDepth: 2,
@@ -109,6 +110,7 @@ export const resourceBudgets = {
   },
   balanced: {
     label: "Balanced",
+    description: "A practical default for small coding tasks.",
     maxToolRounds: 3,
     maxBootstrapCalls: 4,
     maxListDepth: 3,
@@ -118,6 +120,7 @@ export const resourceBudgets = {
   },
   expanded: {
     label: "More Context",
+    description: "Use when the model needs broader repo evidence.",
     maxToolRounds: 5,
     maxBootstrapCalls: 6,
     maxListDepth: 4,
@@ -129,13 +132,28 @@ export const resourceBudgets = {
 
 export const toolProfiles = {
   minimal: {
-    label: "Minimal",
+    label: "Lite",
+    description: "Fast orientation, file browsing, and direct file reads.",
     budget: "low",
     enabledTools: ["get_repo_overview", "list_repo_files", "read_repo_file"],
   },
-  coding: {
-    label: "Coding",
+  explore: {
+    label: "Explore",
+    description: "Repo summaries, stack detection, entry points, search, and file reads.",
     budget: "low",
+    enabledTools: [
+      "get_repo_overview",
+      "find_entrypoints",
+      "inspect_dependencies",
+      "list_repo_files",
+      "read_repo_file",
+      "search_repo",
+    ],
+  },
+  coding: {
+    label: "Build",
+    description: "Best day-to-day coding mode with symbols and multi-file context.",
+    budget: "balanced",
     enabledTools: [
       "get_repo_overview",
       "find_entrypoints",
@@ -147,8 +165,22 @@ export const toolProfiles = {
       "summarize_file_symbols",
     ],
   },
+  debug: {
+    label: "Debug",
+    description: "Narrow mode for tracing files, symbols, and matching code quickly.",
+    budget: "balanced",
+    enabledTools: [
+      "get_repo_overview",
+      "list_repo_files",
+      "read_many_files",
+      "read_repo_file",
+      "search_repo",
+      "summarize_file_symbols",
+    ],
+  },
   deep: {
-    label: "Deep",
+    label: "Full Context",
+    description: "All repo tools with the largest local context budget.",
     budget: "expanded",
     enabledTools: [
       "get_repo_overview",
@@ -164,7 +196,7 @@ export const toolProfiles = {
 };
 
 let toolRuntimeConfig = normalizeToolRuntimeConfig({
-  profile: process.env.OLLAMA_TOOL_PROFILE || "coding",
+  profile: process.env.OLLAMA_TOOL_PROFILE || "explore",
   budget: process.env.OLLAMA_RESOURCE_BUDGET || null,
 });
 
@@ -325,8 +357,8 @@ export const toolDefinitions = [
 ];
 
 function normalizeToolRuntimeConfig(rawConfig = {}) {
-  const requestedProfile = String(rawConfig.profile || "coding").trim();
-  const profileName = Object.hasOwn(toolProfiles, requestedProfile) ? requestedProfile : "coding";
+  const requestedProfile = String(rawConfig.profile || "explore").trim();
+  const profileName = Object.hasOwn(toolProfiles, requestedProfile) ? requestedProfile : "explore";
   const profile = toolProfiles[profileName];
   const requestedBudget = String(rawConfig.budget || profile.budget).trim();
   const budgetName = Object.hasOwn(resourceBudgets, requestedBudget)
@@ -351,6 +383,10 @@ export function configureTooling(rawConfig = {}) {
 
   if (Object.hasOwn(rawConfig, "profile") && !Object.hasOwn(rawConfig, "enabledTools")) {
     delete nextConfig.enabledTools;
+  }
+
+  if (Object.hasOwn(rawConfig, "profile") && !Object.hasOwn(rawConfig, "budget")) {
+    delete nextConfig.budget;
   }
 
   toolRuntimeConfig = normalizeToolRuntimeConfig({
