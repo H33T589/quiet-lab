@@ -18,6 +18,7 @@ import {
   readRepoText,
   repoRoot,
   resolveRepoPath,
+  searchRepoMatches,
   summarizeFileSymbols,
 } from "../tools.mjs";
 
@@ -79,6 +80,22 @@ describe("readRepoText", () => {
       rmSync(tmp, { recursive: true, force: true });
     }
   });
+
+  test("rejects oversized text files before reading them", async () => {
+    const tmp = mkdtempSync(path.join(tmpdir(), "quiet-lab-large-file-"));
+    writeFileSync(path.join(tmp, "large.txt"), "a".repeat(1_000_001));
+
+    try {
+      await attachCodebase(tmp, { persist: false });
+      const result = await readRepoText({ path: "large.txt" });
+
+      assert.equal(result.status, "ERROR");
+      assert.match(result.message, /too large/i);
+    } finally {
+      await attachCodebase(repoRoot, { persist: false });
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("workspace switching", () => {
@@ -96,6 +113,27 @@ describe("workspace switching", () => {
     } finally {
       await attachCodebase(repoRoot, { persist: false });
       rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("hidden path search", () => {
+  test("search_repo does not expose ollama-chat session contents", async () => {
+    const secret = `hidden-session-${Date.now()}-${Math.random()}`;
+    const secretSessionPath = path.join(chatDir, "sessions", "hidden-search-test.json");
+    mkdirSync(path.dirname(secretSessionPath), { recursive: true });
+    writeFileSync(secretSessionPath, JSON.stringify({ secret }));
+
+    try {
+      await attachCodebase(chatDir, { persist: false });
+      const result = await searchRepoMatches({ query: secret });
+
+      assert.equal(result.status, "OK");
+      assert.equal(result.matchCount, 0);
+      assert.deepEqual(result.matches, []);
+    } finally {
+      await attachCodebase(repoRoot, { persist: false });
+      rmSync(secretSessionPath, { force: true });
     }
   });
 });

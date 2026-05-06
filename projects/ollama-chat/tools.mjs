@@ -12,6 +12,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const repoRoot = path.resolve(__dirname, "../..");
 const workspaceStatePath = path.join(__dirname, "sessions", "workspace.json");
 const maxRecentCodebases = 8;
+const maxTextFileBytes = 1_000_000;
 
 const repoRootCanonical = (() => {
   try {
@@ -591,12 +592,15 @@ function parseToolArguments(rawArguments) {
   return {};
 }
 
+function getHiddenPaths() {
+  const activeName = activeRepoRoot ? path.basename(activeRepoRoot) : "";
+  const extraHiddenPaths = activeName === "ollama-chat" ? ["sessions"] : [];
+  return [...hiddenPaths, ...extraHiddenPaths];
+}
+
 function isHidden(relativePath) {
   const rel = normalizeRelative(relativePath);
-  const activeName = path.basename(activeRepoRoot);
-  const extraHiddenPaths = activeName === "ollama-chat" ? ["sessions"] : [];
-  const hidden = [...hiddenPaths, ...extraHiddenPaths];
-  return hidden.some((prefix) => rel === prefix || rel.startsWith(`${prefix}/`));
+  return getHiddenPaths().some((prefix) => rel === prefix || rel.startsWith(`${prefix}/`));
 }
 
 /** Ensures resolved paths cannot escape the repo via .. segments or symlink targets. */
@@ -685,7 +689,7 @@ function formatList(values) {
 }
 
 function getRipgrepHiddenGlobs() {
-  return hiddenPaths.flatMap((hiddenPath) => [
+  return getHiddenPaths().flatMap((hiddenPath) => [
     "--glob",
     `!${hiddenPath}`,
     "--glob",
@@ -880,6 +884,7 @@ async function getTargetInfo(abs) {
     return {
       exists: true,
       kind: info.isDirectory() ? "directory" : info.isFile() ? "file" : "other",
+      size: info.size,
     };
   } catch (error) {
     if (error?.code === "ENOENT") {
@@ -908,18 +913,7 @@ export async function findRepoPathCandidates(input, maxResults = 5) {
     const { stdout } = await execFileAsync("rg", [
       "--files",
       "--hidden",
-      "--glob",
-      "!.git",
-      "--glob",
-      "!.idea/**",
-      "--glob",
-      "!.vscode/**",
-      "--glob",
-      "!node_modules/**",
-      "--glob",
-      "!models/.ollama/**",
-      "--glob",
-      "!projects/ollama-chat/sessions/**",
+      ...getRipgrepHiddenGlobs(),
       root,
     ]);
 
@@ -1063,6 +1057,14 @@ export async function readRepoText(rawArgs = {}) {
     };
   }
 
+  if (info.size > maxTextFileBytes) {
+    return {
+      status: "ERROR",
+      path: rel,
+      message: `File is too large to read safely (${info.size} bytes).`,
+    };
+  }
+
   const raw = await readFile(abs, "utf8");
 
   if (raw.includes("\u0000")) {
@@ -1139,18 +1141,7 @@ export async function searchRepoMatches(rawArgs = {}) {
       "-n",
       "--hidden",
       "-S",
-      "--glob",
-      "!.git",
-      "--glob",
-      "!.idea/**",
-      "--glob",
-      "!.vscode/**",
-      "--glob",
-      "!node_modules/**",
-      "--glob",
-      "!models/.ollama/**",
-      "--glob",
-      "!projects/ollama-chat/sessions/**",
+      ...getRipgrepHiddenGlobs(),
       "--max-count",
       String(maxResults),
       "--",
@@ -1163,6 +1154,7 @@ export async function searchRepoMatches(rawArgs = {}) {
       .split("\n")
       .filter(Boolean)
       .map((line) => line.replace(`${root}/`, ""))
+      .filter((line) => !isHidden(line.split(":")[0] || "."))
       .slice(0, maxResults);
 
     return {

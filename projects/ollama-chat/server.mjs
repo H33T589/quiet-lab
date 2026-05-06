@@ -40,6 +40,7 @@ const host = process.env.OLLAMA_CHAT_HOST || "127.0.0.1";
 const port = Number.parseInt(process.env.OLLAMA_CHAT_PORT || "4317", 10);
 const defaultModel = process.env.OLLAMA_MODEL || "llama3.2:3b";
 const execFileAsync = promisify(execFile);
+const maxJsonBodyBytes = 1_000_000;
 
 const contentTypes = {
   ".css": "text/css; charset=utf-8",
@@ -49,8 +50,24 @@ const contentTypes = {
   ".svg": "image/svg+xml",
 };
 
+const securityHeaders = {
+  "Content-Security-Policy": "default-src 'self'; connect-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
+  "Cross-Origin-Resource-Policy": "same-origin",
+  "Referrer-Policy": "no-referrer",
+  "X-Content-Type-Options": "nosniff",
+  "X-Frame-Options": "DENY",
+};
+
+class HttpError extends Error {
+  constructor(statusCode, message) {
+    super(message);
+    this.statusCode = statusCode;
+  }
+}
+
 function sendJson(res, statusCode, payload) {
   res.writeHead(statusCode, {
+    ...securityHeaders,
     "Content-Type": "application/json; charset=utf-8",
     "Cache-Control": "no-store",
   });
@@ -71,8 +88,15 @@ function sendBadRequest(res, message) {
 
 async function readJsonBody(req) {
   const chunks = [];
+  let totalBytes = 0;
 
   for await (const chunk of req) {
+    totalBytes += chunk.byteLength;
+
+    if (totalBytes > maxJsonBodyBytes) {
+      throw new HttpError(413, "Request body is too large.");
+    }
+
     chunks.push(chunk);
   }
 
@@ -80,7 +104,11 @@ async function readJsonBody(req) {
     return {};
   }
 
-  return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  try {
+    return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  } catch {
+    throw new HttpError(400, "Request body must be valid JSON.");
+  }
 }
 
 function getSessionRouteParts(urlPathname) {
@@ -108,6 +136,41 @@ async function getSession(sessionId) {
 function sendEvent(res, event, data) {
   res.write(`event: ${event}\n`);
   res.write(`data: ${JSON.stringify(data)}\n\n`);
+}
+
+function isAllowedHost(hostHeader) {
+  const rawHost = String(hostHeader || "").toLowerCase();
+  const hostname = rawHost.replace(/^\[/, "").replace(/\](:\d+)?$/, "").replace(/:\d+$/, "");
+  const allowed = new Set(["127.0.0.1", "localhost", "::1"]);
+
+  if (host && host !== "0.0.0.0" && host !== "::") {
+    allowed.add(host.toLowerCase());
+  }
+
+  return allowed.has(hostname);
+}
+
+function isAllowedOrigin(originHeader) {
+  if (!originHeader) {
+    return true;
+  }
+
+  try {
+    const origin = new URL(originHeader);
+    return isAllowedHost(origin.host);
+  } catch {
+    return false;
+  }
+}
+
+function assertRequestAllowed(req) {
+  if (!isAllowedHost(req.headers.host)) {
+    throw new HttpError(403, "Host is not allowed.");
+  }
+
+  if (["POST", "PUT", "PATCH", "DELETE"].includes(req.method || "") && !isAllowedOrigin(req.headers.origin)) {
+    throw new HttpError(403, "Origin is not allowed.");
+  }
 }
 
 async function pickWorkspaceDirectory() {
@@ -403,6 +466,7 @@ async function handleChatStream(req, res) {
   }
 
   res.writeHead(200, {
+    ...securityHeaders,
     "Cache-Control": "no-cache, no-transform",
     Connection: "keep-alive",
     "Content-Type": "text/event-stream; charset=utf-8",
@@ -482,6 +546,7 @@ async function serveStatic(res, pathname) {
 
     const ext = path.extname(filePath);
     res.writeHead(200, {
+      ...securityHeaders,
       "Content-Type": contentTypes[ext] || "application/octet-stream",
       "Cache-Control": "no-store",
     });
@@ -493,6 +558,7 @@ async function serveStatic(res, pathname) {
 
 const server = http.createServer(async (req, res) => {
   try {
+    assertRequestAllowed(req);
     const url = new URL(req.url || "/", `http://${req.headers.host || "127.0.0.1"}`);
     const pathname = url.pathname;
 
@@ -553,7 +619,7 @@ const server = http.createServer(async (req, res) => {
 
     await serveStatic(res, pathname);
   } catch (error) {
-    sendJson(res, 500, { error: error.message || "Internal server error" });
+    sendJson(res, error.statusCode || 500, { error: error.message || "Internal server error" });
   }
 });
 
