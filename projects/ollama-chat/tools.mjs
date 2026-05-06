@@ -1096,6 +1096,96 @@ export async function readRepoText(rawArgs = {}) {
   };
 }
 
+async function searchRepoMatchesWithoutRipgrep({
+  abs,
+  rel,
+  root,
+  query,
+  maxResults,
+  targetInfo,
+}) {
+  const matches = [];
+
+  async function scanOneFile(fileAbs, fileRel) {
+    if (matches.length >= maxResults) {
+      return;
+    }
+
+    try {
+      const info = await stat(fileAbs);
+
+      if (!info.isFile() || info.size > maxTextFileBytes) {
+        return;
+      }
+
+      const text = await readFile(fileAbs, "utf8");
+
+      if (text.includes("\u0000")) {
+        return;
+      }
+
+      const lines = text.split("\n");
+
+      for (let i = 0; i < lines.length && matches.length < maxResults; i += 1) {
+        if (lines[i].includes(query)) {
+          matches.push(`${fileRel}:${i + 1}:${lines[i]}`);
+        }
+      }
+    } catch {
+      // Skip unreadable or racey paths
+    }
+  }
+
+  async function walk(currentAbs, currentRel) {
+    if (matches.length >= maxResults) {
+      return;
+    }
+
+    let entries;
+
+    try {
+      entries = await readdir(currentAbs, { withFileTypes: true });
+    } catch {
+      return;
+    }
+
+    entries.sort((a, b) => a.name.localeCompare(b.name));
+
+    for (const dirent of entries) {
+      if (matches.length >= maxResults) {
+        return;
+      }
+
+      const childRel = normalizeRelative(
+        currentRel === "." ? dirent.name : `${currentRel}/${dirent.name}`,
+      );
+
+      if (isHidden(childRel)) {
+        continue;
+      }
+
+      const childAbs = path.join(currentAbs, dirent.name);
+
+      if (dirent.isDirectory()) {
+        await walk(childAbs, childRel);
+      } else if (dirent.isFile()) {
+        await scanOneFile(childAbs, childRel);
+      }
+    }
+  }
+
+  if (targetInfo.kind === "file") {
+    await scanOneFile(abs, rel);
+  } else {
+    await walk(abs, rel);
+  }
+
+  return matches
+    .map((line) => line.replace(`${root}/`, ""))
+    .filter((line) => !isHidden(line.split(":")[0] || "."))
+    .slice(0, maxResults);
+}
+
 export async function searchRepoMatches(rawArgs = {}) {
   const args = parseToolArguments(rawArgs);
   const { limits } = getToolRuntimeConfig();
@@ -1179,6 +1269,40 @@ export async function searchRepoMatches(rawArgs = {}) {
         capped: false,
         note: "The target path exists, but the query returned no matches.",
         matches: [],
+      };
+    }
+
+    if (error?.code === "ENOENT") {
+      const matches = await searchRepoMatchesWithoutRipgrep({
+        abs,
+        rel,
+        root,
+        query,
+        maxResults,
+        targetInfo,
+      });
+
+      const fallbackHint = "Plain substring search (install ripgrep for regex + speed).";
+      let note;
+
+      if (!matches.length) {
+        note = "The target path exists, but the query returned no matches.";
+      } else if (matches.length >= maxResults) {
+        note = `Results capped at ${maxResults}. ${fallbackHint}`;
+      } else {
+        note = fallbackHint;
+      }
+
+      return {
+        status: "OK",
+        path: rel,
+        query,
+        targetExists: true,
+        targetKind: targetInfo.kind,
+        matchCount: matches.length,
+        capped: matches.length >= maxResults,
+        note,
+        matches,
       };
     }
 

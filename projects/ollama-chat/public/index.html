@@ -48,6 +48,10 @@
           </div>
           <div class="control-row">
             <label class="control">
+              <span>Model profile</span>
+              <select id="model-profile-select" title="Shortcut: set model from a saved profile"></select>
+            </label>
+            <label class="control">
               <span>Model</span>
               <select id="model-select"></select>
             </label>
@@ -93,6 +97,7 @@
             <p class="hint">Shift+Enter for newline</p>
             <div class="composer-button-row">
               <button id="save-session-button" class="ghost-button" type="button">Save Session</button>
+              <button id="stop-stream-button" class="ghost-button" type="button" disabled>Stop</button>
               <button id="send-button" type="submit">Send</button>
             </div>
           </div>
@@ -181,6 +186,19 @@
           <p>Disable tools when a small model is getting distracted or slow.</p>
         </div>
         <div id="tool-toggle-list" class="toggle-list"></div>
+      </section>
+
+      <section class="control-panel-section">
+        <div class="section-copy">
+          <h4>Custom model profiles</h4>
+          <p>Name + Ollama tag (e.g. <code>gemma3:4b</code>). Shown in the header profile menu.</p>
+        </div>
+        <form id="custom-model-profile-form" class="custom-preset-form">
+          <input id="custom-model-profile-name" type="text" maxlength="32" placeholder="Profile name" />
+          <input id="custom-model-profile-tag" type="text" maxlength="80" placeholder="Ollama model tag" />
+          <button class="primary-button" type="submit">Add profile</button>
+        </form>
+        <div id="custom-model-profile-list" class="preset-chip-list"></div>
       </section>
 
       <section class="control-panel-section">

@@ -27,7 +27,7 @@ That directory is intentionally ignored by git because it contains downloaded mo
 ## Quick Start
 
 1. Install and start `Ollama`.
-2. Pull a small default model such as `llama3.2:3b`.
+2. Pull a small default model such as `phi4-mini` (or `qwen2.5-coder:3b` for code-heavy work).
 3. Use the starter app in `projects/ollama-chat/` to talk to the local API.
 
 ## What To Commit
@@ -45,7 +45,7 @@ That directory is intentionally ignored by git because it contains downloaded mo
 
 ## Suggested Next Steps
 
-1. Keep your default local model small on memory-constrained machines. `llama3.2:3b` is a good starting point.
+1. Keep your default local model small on memory-constrained machines. `phi4-mini` is a strong default; see `projects/ollama-chat/README.md` for `OLLAMA_MODEL`.
 2. Put reusable scripts in `projects/`.
 3. Keep prompts, install notes, and benchmark results in `notes/`.
 

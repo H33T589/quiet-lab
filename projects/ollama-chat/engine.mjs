@@ -22,7 +22,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const sessionsDir = path.join(__dirname, "sessions");
 
 const defaultBaseUrl = process.env.OLLAMA_BASE_URL || "http://127.0.0.1:11434";
-const defaultModel = process.env.OLLAMA_MODEL || "llama3.2:3b";
+const defaultModel = process.env.OLLAMA_MODEL || "phi4-mini";
 function createBasePrompt(preset, systemPromptOverride = null) {
   return systemPromptOverride || resolvePreset(preset) || resolvePreset("coder");
 }
@@ -701,7 +701,15 @@ function answerFromBootstrap(userInput, bootstrapResults) {
   );
 }
 
-async function requestRecoveryAnswer({ baseUrl, model, messagesForRequest }) {
+export function isAbortError(error) {
+  return (
+    error?.name === "AbortError" ||
+    error?.code === 20 ||
+    error?.code === "ABORT_ERR"
+  );
+}
+
+async function requestRecoveryAnswer({ baseUrl, model, messagesForRequest, signal }) {
   const recovery = await requestAssistant({
     baseUrl,
     model,
@@ -715,6 +723,7 @@ async function requestRecoveryAnswer({ baseUrl, model, messagesForRequest }) {
     ],
     stream: false,
     includeTools: false,
+    signal,
   });
 
   return recovery.content || "";
@@ -737,6 +746,7 @@ async function requestAssistant({
   stream,
   includeTools,
   onToken = () => {},
+  signal,
 }) {
   let response;
 
@@ -744,6 +754,7 @@ async function requestAssistant({
     response = await fetch(`${baseUrl}/api/chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      signal,
       body: JSON.stringify({
         model,
         stream,
@@ -751,7 +762,11 @@ async function requestAssistant({
         ...(includeTools ? { tools: getEnabledToolDefinitions() } : {}),
       }),
     });
-  } catch {
+  } catch (error) {
+    if (isAbortError(error)) {
+      throw error;
+    }
+
     throw new Error(`Could not reach Ollama at ${baseUrl}. Make sure Ollama is running.`);
   }
 
@@ -1092,150 +1107,165 @@ export class ChatSession {
       onToolCall = () => {},
       onToolResult = () => {},
       onFinal = () => {},
+      signal,
     } = {},
   ) {
+    const turnStartLength = this.messages.length;
     this.messages.push({ role: "user", content: userInput });
 
-    if (!shouldUseRepoTools(userInput, this.activePreset)) {
-      const assistant = await requestAssistant({
-        baseUrl: this.baseUrl,
-        model: this.model,
-        messagesForRequest: this.messages,
-        stream: true,
-        includeTools: false,
-        onToken,
-      });
-
-      this.messages.push({ role: "assistant", content: assistant.content });
-      await this.save();
-      onFinal(assistant.content);
-      return { text: assistant.content, toolEvents: [] };
-    }
-
-    const bootstrapCalls = await buildBootstrapContext(userInput);
-    const bootstrapResults = [];
-    const seenToolCalls = new Set();
-    const toolEvents = [];
-
-    for (const call of bootstrapCalls) {
-      onToolCall(call);
-      const result = await executeToolCall(call);
-      onToolResult({ call, result });
-      bootstrapResults.push({ name: call.function.name, content: result });
-      toolEvents.push({ type: "bootstrap", call, result });
-    }
-
-    const bootstrapContext = formatBootstrapContext(bootstrapResults);
-    const projectMemory = await loadProjectMemory();
-    const memoryContext = formatProjectMemoryContext(projectMemory);
-    const memoryAnswer = answerMemoryQuestion(userInput, projectMemory);
-    const bootstrapAnswer = memoryAnswer || answerFromBootstrap(userInput, bootstrapResults);
-
-    if (bootstrapAnswer) {
-      if (!memoryAnswer && this.model !== "no-network-needed") {
-        await updateProjectMemoryFromBootstrap(userInput, bootstrapResults, bootstrapAnswer);
-      }
-      this.messages.push({ role: "assistant", content: bootstrapAnswer });
-      await this.save();
-      onFinal(bootstrapAnswer);
-      return { text: bootstrapAnswer, toolEvents };
-    }
-
-    const { limits } = getToolRuntimeConfig();
-
-    for (let round = 0; round < limits.maxToolRounds; round += 1) {
-      const assistant = await requestAssistant({
-        baseUrl: this.baseUrl,
-        model: this.model,
-        messagesForRequest: messagesWithBootstrapContext(this.messages, bootstrapContext, memoryContext),
-        stream: false,
-        includeTools: true,
-      });
-
-      if (assistant.toolCalls.length) {
-        this.messages.push({
-          role: "assistant",
-          content: assistant.content || "",
-          tool_calls: assistant.toolCalls,
+    try {
+      if (!shouldUseRepoTools(userInput, this.activePreset)) {
+        const assistant = await requestAssistant({
+          baseUrl: this.baseUrl,
+          model: this.model,
+          messagesForRequest: this.messages,
+          stream: true,
+          includeTools: false,
+          onToken,
+          signal,
         });
 
-        let sawNewToolCall = false;
-
-        for (const call of assistant.toolCalls) {
-          const callKey = `${call.function.name}:${JSON.stringify(call.function.arguments || {})}`;
-
-          if (!seenToolCalls.has(callKey)) {
-            sawNewToolCall = true;
-            seenToolCalls.add(callKey);
-          }
-
-          onToolCall(call);
-          const result = await executeToolCall(call);
-          onToolResult({ call, result });
-          toolEvents.push({ type: "tool", call, result });
-          this.messages.push({
-            role: "tool",
-            tool_name: call.function.name,
-            content: result,
-          });
-        }
-
-        if (!sawNewToolCall) {
-          break;
-        }
-
-        continue;
-      }
-
-      if (assistant.content) {
         this.messages.push({ role: "assistant", content: assistant.content });
         await this.save();
         onFinal(assistant.content);
-        return { text: assistant.content, toolEvents };
+        return { text: assistant.content, toolEvents: [] };
       }
-    }
 
-    const finalAssistant = await requestAssistant({
-      baseUrl: this.baseUrl,
-      model: this.model,
-      messagesForRequest: [
-        ...messagesWithBootstrapContext(this.messages, bootstrapContext, memoryContext),
-        {
-          role: "system",
-          content:
-            "Answer now using the gathered repo evidence. Do not call tools again. If the evidence is incomplete, say exactly what is missing.",
-        },
-      ],
-      stream: false,
-      includeTools: false,
-    });
+      const bootstrapCalls = await buildBootstrapContext(userInput);
+      const bootstrapResults = [];
+      const seenToolCalls = new Set();
+      const toolEvents = [];
 
-    if (finalAssistant.content) {
-      this.messages.push({ role: "assistant", content: finalAssistant.content });
+      for (const call of bootstrapCalls) {
+        onToolCall(call);
+        const result = await executeToolCall(call);
+        onToolResult({ call, result });
+        bootstrapResults.push({ name: call.function.name, content: result });
+        toolEvents.push({ type: "bootstrap", call, result });
+      }
+
+      const bootstrapContext = formatBootstrapContext(bootstrapResults);
+      const projectMemory = await loadProjectMemory();
+      const memoryContext = formatProjectMemoryContext(projectMemory);
+      const memoryAnswer = answerMemoryQuestion(userInput, projectMemory);
+      const bootstrapAnswer = memoryAnswer || answerFromBootstrap(userInput, bootstrapResults);
+
+      if (bootstrapAnswer) {
+        if (!memoryAnswer && this.model !== "no-network-needed") {
+          await updateProjectMemoryFromBootstrap(userInput, bootstrapResults, bootstrapAnswer);
+        }
+        this.messages.push({ role: "assistant", content: bootstrapAnswer });
+        await this.save();
+        onFinal(bootstrapAnswer);
+        return { text: bootstrapAnswer, toolEvents };
+      }
+
+      const { limits } = getToolRuntimeConfig();
+
+      for (let round = 0; round < limits.maxToolRounds; round += 1) {
+        const assistant = await requestAssistant({
+          baseUrl: this.baseUrl,
+          model: this.model,
+          messagesForRequest: messagesWithBootstrapContext(this.messages, bootstrapContext, memoryContext),
+          stream: false,
+          includeTools: true,
+          signal,
+        });
+
+        if (assistant.toolCalls.length) {
+          this.messages.push({
+            role: "assistant",
+            content: assistant.content || "",
+            tool_calls: assistant.toolCalls,
+          });
+
+          let sawNewToolCall = false;
+
+          for (const call of assistant.toolCalls) {
+            const callKey = `${call.function.name}:${JSON.stringify(call.function.arguments || {})}`;
+
+            if (!seenToolCalls.has(callKey)) {
+              sawNewToolCall = true;
+              seenToolCalls.add(callKey);
+            }
+
+            onToolCall(call);
+            const result = await executeToolCall(call);
+            onToolResult({ call, result });
+            toolEvents.push({ type: "tool", call, result });
+            this.messages.push({
+              role: "tool",
+              tool_name: call.function.name,
+              content: result,
+            });
+          }
+
+          if (!sawNewToolCall) {
+            break;
+          }
+
+          continue;
+        }
+
+        if (assistant.content) {
+          this.messages.push({ role: "assistant", content: assistant.content });
+          await this.save();
+          onFinal(assistant.content);
+          return { text: assistant.content, toolEvents };
+        }
+      }
+
+      const finalAssistant = await requestAssistant({
+        baseUrl: this.baseUrl,
+        model: this.model,
+        messagesForRequest: [
+          ...messagesWithBootstrapContext(this.messages, bootstrapContext, memoryContext),
+          {
+            role: "system",
+            content:
+              "Answer now using the gathered repo evidence. Do not call tools again. If the evidence is incomplete, say exactly what is missing.",
+          },
+        ],
+        stream: false,
+        includeTools: false,
+        signal,
+      });
+
+      if (finalAssistant.content) {
+        this.messages.push({ role: "assistant", content: finalAssistant.content });
+        await this.save();
+        onFinal(finalAssistant.content);
+        return { text: finalAssistant.content, toolEvents };
+      }
+
+      const recoveryContent = await requestRecoveryAnswer({
+        baseUrl: this.baseUrl,
+        model: this.model,
+        messagesForRequest: messagesWithBootstrapContext(this.messages, bootstrapContext, memoryContext),
+        signal,
+      });
+
+      if (recoveryContent) {
+        this.messages.push({ role: "assistant", content: recoveryContent });
+        await this.save();
+        onFinal(recoveryContent);
+        return { text: recoveryContent, toolEvents };
+      }
+
+      const fallback =
+        "I gathered repo context, but the model failed to turn it into a final answer. Try asking with a little more detail, such as the file path or what you want summarized.";
+      this.messages.push({ role: "assistant", content: fallback });
       await this.save();
-      onFinal(finalAssistant.content);
-      return { text: finalAssistant.content, toolEvents };
+      onFinal(fallback);
+      return { text: fallback, toolEvents };
+    } catch (error) {
+      if (isAbortError(error)) {
+        this.messages.length = turnStartLength;
+        throw error;
+      }
+
+      throw error;
     }
-
-    const recoveryContent = await requestRecoveryAnswer({
-      baseUrl: this.baseUrl,
-      model: this.model,
-      messagesForRequest: messagesWithBootstrapContext(this.messages, bootstrapContext, memoryContext),
-    });
-
-    if (recoveryContent) {
-      this.messages.push({ role: "assistant", content: recoveryContent });
-      await this.save();
-      onFinal(recoveryContent);
-      return { text: recoveryContent, toolEvents };
-    }
-
-    const fallback =
-      "I gathered repo context, but the model failed to turn it into a final answer. Try asking with a little more detail, such as the file path or what you want summarized.";
-    this.messages.push({ role: "assistant", content: fallback });
-    await this.save();
-    onFinal(fallback);
-    return { text: fallback, toolEvents };
   }
 }
 

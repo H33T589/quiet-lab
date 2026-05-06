@@ -74,7 +74,8 @@ test("project memory updates from repo workflow evidence", async () => {
 
   assert.deepEqual(memory.project.stack, ["Node.js", "static HTML"]);
   assert.ok(memory.project.packageScripts.includes("package.json: test = node --test"));
-  assert.ok(memory.project.knownRisks.some((risk) => /lint/.test(risk)));
+  assert.ok(memory.project.entrypoints.includes("server.mjs"));
+  assert.equal(memory.project.knownRisks.length, 0);
 });
 
 test("chat can answer from stored project memory", async () => {

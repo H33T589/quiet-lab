@@ -11,12 +11,14 @@ import {
   createSessionId,
   deleteSession,
   getSessionSnapshot,
+  isAbortError,
   listAvailableModels,
   listSessionSummaries,
   normalizeSessionId,
   saveSessionAs,
   sessionsDir,
 } from "./engine.mjs";
+import { builtInModelProfiles } from "./model-profiles.mjs";
 import {
   clearProjectMemory,
   loadProjectMemory,
@@ -43,7 +45,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, "public");
 const defaultHost = process.env.OLLAMA_CHAT_HOST || "127.0.0.1";
 const defaultPort = Number.parseInt(process.env.OLLAMA_CHAT_PORT || "4317", 10);
-const defaultModel = process.env.OLLAMA_MODEL || "llama3.2:3b";
+const defaultModel = process.env.OLLAMA_MODEL || "phi4-mini";
 const execFileAsync = promisify(execFile);
 const maxJsonBodyBytes = 1_000_000;
 
@@ -247,6 +249,7 @@ async function handleMeta(_req, res) {
   sendJson(res, 200, {
     defaultModel,
     hiddenPaths,
+    modelProfiles: builtInModelProfiles,
     ollamaReachable: models.length > 0,
     models: models.length ? models : [defaultModel],
     presets: listPresets(),
@@ -509,8 +512,20 @@ async function handleChatStream(req, res) {
     preset: session.activePreset,
   });
 
+  const abortController = new AbortController();
+  let streamFinished = false;
+
+  const onRequestClosed = () => {
+    if (!streamFinished) {
+      abortController.abort();
+    }
+  };
+
+  req.once("close", onRequestClosed);
+
   try {
     await session.chat(message, {
+      signal: abortController.signal,
       onToken(token) {
         sendEvent(res, "token", { token });
       },
@@ -533,9 +548,15 @@ async function handleChatStream(req, res) {
         });
       },
     });
+    streamFinished = true;
   } catch (error) {
-    sendEvent(res, "error", { message: error.message });
+    if (isAbortError(error)) {
+      sendEvent(res, "cancelled", {});
+    } else {
+      sendEvent(res, "error", { message: error.message });
+    }
   } finally {
+    req.removeListener("close", onRequestClosed);
     res.end();
   }
 }

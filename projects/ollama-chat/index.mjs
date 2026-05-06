@@ -25,7 +25,7 @@ const modelArg = args.find((arg, index) => {
   return true;
 });
 
-const model = modelArg || process.env.OLLAMA_MODEL || "llama3.2:3b";
+const model = modelArg || process.env.OLLAMA_MODEL || "phi4-mini";
 const explicitModel = modelArg || process.env.OLLAMA_MODEL || null;
 const rl = readline.createInterface({ input, output });
 

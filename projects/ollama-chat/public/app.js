@@ -13,7 +13,10 @@ const state = {
   repoFilter: "",
   sessions: [],
   sending: false,
+  streamAbortController: null,
   streamTokenCount: 0,
+  activeModelProfileId: "custom",
+  customModelProfiles: [],
   statusText: "Loading workspace...",
   statusTone: "neutral",
   controlCenterOpen: false,
@@ -42,6 +45,10 @@ const elements = {
   controlCenterBackdrop: document.querySelector("#control-center-backdrop"),
   controlCenterButton: document.querySelector("#control-center-button"),
   controlCenterClose: document.querySelector("#control-center-close"),
+  customModelProfileForm: document.querySelector("#custom-model-profile-form"),
+  customModelProfileList: document.querySelector("#custom-model-profile-list"),
+  customModelProfileName: document.querySelector("#custom-model-profile-name"),
+  customModelProfileTag: document.querySelector("#custom-model-profile-tag"),
   customPresetForm: document.querySelector("#custom-preset-form"),
   customPresetList: document.querySelector("#custom-preset-list"),
   customPresetName: document.querySelector("#custom-preset-name"),
@@ -66,6 +73,7 @@ const elements = {
   memoryRefreshButton: document.querySelector("#memory-refresh-button"),
   memorySaveButton: document.querySelector("#memory-save-button"),
   memorySummary: document.querySelector("#memory-summary"),
+  modelProfileSelect: document.querySelector("#model-profile-select"),
   modelSelect: document.querySelector("#model-select"),
   newSessionButton: document.querySelector("#new-session-button"),
   presetSelect: document.querySelector("#preset-select"),
@@ -84,6 +92,7 @@ const elements = {
   saveSessionButton: document.querySelector("#save-session-button"),
   selectedFileButton: document.querySelector("#selected-file-button"),
   sendButton: document.querySelector("#send-button"),
+  stopStreamButton: document.querySelector("#stop-stream-button"),
   sessionList: document.querySelector("#session-list"),
   sessionStats: document.querySelector("#session-stats"),
   sessionTitle: document.querySelector("#session-title"),
@@ -103,6 +112,219 @@ const elements = {
 };
 
 const customPresetStorageKey = "quiet-lab.customPresets.v1";
+const modelProfileStorageKey = "quiet-lab.modelProfiles.v1";
+
+function pickAvailableModel(preferred, availableModels, fallback) {
+  const list = Array.isArray(availableModels) ? availableModels : [];
+
+  if (preferred && list.includes(preferred)) {
+    return preferred;
+  }
+
+  if (preferred) {
+    const prefix = preferred.split(":")[0];
+    const partial = list.find((name) => name === preferred || name.startsWith(`${prefix}:`));
+
+    if (partial) {
+      return partial;
+    }
+  }
+
+  return fallback || list[0] || preferred || "phi4-mini";
+}
+
+function getAllModelProfiles() {
+  const builtIn = state.meta?.modelProfiles || [];
+  return [...builtIn, ...state.customModelProfiles];
+}
+
+function loadModelProfilesFromStorage() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(modelProfileStorageKey) || "{}");
+    state.customModelProfiles = Array.isArray(raw.custom)
+      ? raw.custom.filter((row) => row?.id && row?.label && row?.model)
+      : [];
+    if (typeof raw.activeProfileId === "string") {
+      state.activeModelProfileId = raw.activeProfileId;
+    }
+  } catch {
+    state.customModelProfiles = [];
+  }
+}
+
+function saveModelProfilesToStorage() {
+  localStorage.setItem(
+    modelProfileStorageKey,
+    JSON.stringify({
+      custom: state.customModelProfiles,
+      activeProfileId: state.activeModelProfileId,
+    }),
+  );
+}
+
+function resolvedProfileModel(profile) {
+  return pickAvailableModel(
+    profile.model,
+    state.meta?.models,
+    state.meta?.defaultModel || profile.model,
+  );
+}
+
+function profileMatchesSessionModel(profile) {
+  const want = resolvedProfileModel(profile);
+  return want === state.model;
+}
+
+function findProfileIdForCurrentModel() {
+  const match = getAllModelProfiles().find((profile) => profileMatchesSessionModel(profile));
+  return match?.id || "custom";
+}
+
+function renderModelProfileSelect() {
+  if (!elements.modelProfileSelect) {
+    return;
+  }
+
+  const options = [
+    ...getAllModelProfiles().map((profile) => ({
+      value: profile.id,
+      label: profile.label,
+      hint: profile.description || "",
+    })),
+    { value: "custom", label: "Custom", hint: "Pick any model from the list" },
+  ];
+
+  elements.modelProfileSelect.innerHTML = options
+    .map(
+      (option) =>
+        `<option value="${escapeHtml(option.value)}" title="${escapeHtml(option.hint)}">${escapeHtml(option.label)}</option>`,
+    )
+    .join("");
+
+  const valid = options.some((option) => option.value === state.activeModelProfileId);
+  elements.modelProfileSelect.value = valid ? state.activeModelProfileId : "custom";
+}
+
+async function patchSessionModel(model) {
+  if (!state.currentSessionId) {
+    return;
+  }
+
+  const payload = await fetchJson(`/api/sessions/${encodeURIComponent(state.currentSessionId)}/config`, {
+    method: "POST",
+    body: JSON.stringify({ model }),
+  });
+
+  state.sessions = payload.sessions;
+  setSessionState(payload.session);
+  render();
+}
+
+async function applyModelProfile(profileId) {
+  state.activeModelProfileId = profileId;
+  saveModelProfilesToStorage();
+  renderModelProfileSelect();
+
+  if (profileId === "custom") {
+    render();
+    return;
+  }
+
+  const profile = getAllModelProfiles().find((candidate) => candidate.id === profileId);
+
+  if (!profile) {
+    return;
+  }
+
+  const model = resolvedProfileModel(profile);
+
+  if (model === state.model) {
+    render();
+    return;
+  }
+
+  state.model = model;
+  elements.modelSelect.value = model;
+  setStatus(`Model profile: ${profile.label} → ${model}`, "success");
+
+  try {
+    await patchSessionModel(model);
+  } catch (error) {
+    setStatus(error.message, "error");
+    await loadSession(state.currentSessionId);
+  }
+}
+
+function renderCustomModelProfiles() {
+  if (!elements.customModelProfileList) {
+    return;
+  }
+
+  elements.customModelProfileList.innerHTML = "";
+
+  if (!state.customModelProfiles.length) {
+    elements.customModelProfileList.innerHTML = `<p class="empty-state">No custom profiles yet.</p>`;
+    return;
+  }
+
+  for (const profile of state.customModelProfiles) {
+    const chip = document.createElement("div");
+    chip.className = "preset-chip";
+    chip.innerHTML = `
+      <span>${escapeHtml(profile.label)} → ${escapeHtml(profile.model)}</span>
+      <button type="button" aria-label="Delete ${escapeHtml(profile.label)}">×</button>
+    `;
+    chip.querySelector("button").addEventListener("click", () => {
+      state.customModelProfiles = state.customModelProfiles.filter((row) => row.id !== profile.id);
+
+      if (state.activeModelProfileId === profile.id) {
+        state.activeModelProfileId = "custom";
+      }
+
+      saveModelProfilesToStorage();
+      renderModelProfileSelect();
+      renderControlCenter();
+    });
+    elements.customModelProfileList.append(chip);
+  }
+}
+
+function syncModelProfileUiWithSession() {
+  if (state.activeModelProfileId && state.activeModelProfileId !== "custom") {
+    const profile = getAllModelProfiles().find((candidate) => candidate.id === state.activeModelProfileId);
+
+    if (profile && profileMatchesSessionModel(profile)) {
+      renderModelProfileSelect();
+      return;
+    }
+  }
+
+  state.activeModelProfileId = findProfileIdForCurrentModel();
+  saveModelProfilesToStorage();
+  renderModelProfileSelect();
+}
+
+function addCustomModelProfile(name, modelTag) {
+  const cleanName = String(name || "")
+    .trim()
+    .replace(/[^A-Za-z0-9 _-]+/g, "")
+    .replace(/\s+/g, " ")
+    .slice(0, 32);
+  const cleanModel = String(modelTag || "").trim();
+
+  if (!cleanName || !cleanModel) {
+    throw new Error("Profile name and model tag are required.");
+  }
+
+  const slug = cleanName.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "profile";
+  const id = `custom-${slug}`;
+  state.customModelProfiles = [
+    { id, label: cleanName, model: cleanModel, description: "Custom profile" },
+    ...state.customModelProfiles.filter((row) => row.id !== id),
+  ].slice(0, 16);
+  saveModelProfilesToStorage();
+  renderModelProfileSelect();
+}
 
 function escapeHtml(value) {
   return String(value)
@@ -491,6 +713,7 @@ function renderControlCenter() {
     .join("");
 
   renderCustomPresets();
+  renderCustomModelProfiles();
   renderMemory();
   renderDiagnostics();
 }
@@ -610,6 +833,10 @@ function syncControls() {
 
   elements.composerInput.disabled = sendDisabled;
   elements.modelSelect.disabled = state.sending;
+  if (elements.modelProfileSelect) {
+    elements.modelProfileSelect.disabled = state.sending;
+  }
+
   elements.newSessionButton.disabled = state.sending;
   elements.presetSelect.disabled = state.sending;
   elements.repoFilterInput.disabled = state.sending;
@@ -628,7 +855,11 @@ function syncControls() {
   elements.memoryNotesInput.disabled = state.sending;
   elements.memoryRefreshButton.disabled = state.sending;
   elements.memorySaveButton.disabled = state.sending;
-  elements.sendButton.textContent = state.sending ? "Waiting…" : "Send";
+  elements.sendButton.textContent = "Send";
+  if (elements.stopStreamButton) {
+    elements.stopStreamButton.disabled = !state.sending;
+  }
+
   for (const button of elements.quickPromptButtons) {
     button.disabled = state.sending;
   }
@@ -644,11 +875,13 @@ function render() {
   renderRepoTree();
   renderBreadcrumbs();
   renderFilePreview();
+  renderModelProfileSelect();
   renderControlCenter();
   syncControls();
 }
 
 async function loadMeta() {
+  loadModelProfilesFromStorage();
   state.meta = await fetchJson("/api/meta");
   state.sessions = state.meta.sessions;
   state.model = state.meta.defaultModel;
@@ -743,6 +976,7 @@ async function loadSessions() {
 async function loadSession(sessionId) {
   const payload = await fetchJson(`/api/sessions/${encodeURIComponent(sessionId)}`);
   setSessionState(payload.session);
+  syncModelProfileUiWithSession();
   render();
 }
 
@@ -1025,12 +1259,17 @@ function addAssistantPlaceholder() {
   return assistant;
 }
 
+function isStreamAbortError(error) {
+  return error?.name === "AbortError";
+}
+
 async function streamChat(message) {
   const userMessage = { role: "user", content: message };
   state.messages.push(userMessage);
   const assistant = addAssistantPlaceholder();
   state.sending = true;
   state.streamTokenCount = 0;
+  state.streamAbortController = new AbortController();
   setStatus("Sending message...", "busy");
   render();
 
@@ -1038,6 +1277,7 @@ async function streamChat(message) {
     const response = await fetch("/api/chat/stream", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      signal: state.streamAbortController.signal,
       body: JSON.stringify({
         message,
         model: state.model,
@@ -1148,8 +1388,22 @@ async function streamChat(message) {
     await loadMemory();
     await loadSession(state.currentSessionId);
   } catch (error) {
-    assistant.content = `Error: ${error.message}`;
     state.streamTokenCount = 0;
+
+    if (isStreamAbortError(error)) {
+      try {
+        await loadSessions();
+        await loadSession(state.currentSessionId);
+      } catch {
+        // Session reload best-effort after cancel
+      }
+
+      setStatus("Generation stopped.", "neutral");
+      renderMessages();
+      return;
+    }
+
+    assistant.content = `Error: ${error.message}`;
 
     if (state.meta && /Could not reach Ollama/i.test(error.message)) {
       state.meta.ollamaReachable = false;
@@ -1160,6 +1414,7 @@ async function streamChat(message) {
 
     renderMessages();
   } finally {
+    state.streamAbortController = null;
     state.sending = false;
     render();
   }
@@ -1352,13 +1607,39 @@ elements.deleteDialogConfirm.addEventListener("click", () => {
   });
 });
 
+elements.modelProfileSelect.addEventListener("change", async (event) => {
+  await applyModelProfile(event.target.value);
+});
+
 elements.modelSelect.addEventListener("change", async (event) => {
   state.model = event.target.value;
+  state.activeModelProfileId = "custom";
+  saveModelProfilesToStorage();
+
   try {
-    await updateConfig();
+    await patchSessionModel(state.model);
   } catch (error) {
     setStatus(error.message, "error");
     await loadSession(state.currentSessionId);
+  }
+});
+
+elements.stopStreamButton.addEventListener("click", () => {
+  state.streamAbortController?.abort();
+});
+
+elements.customModelProfileForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+
+  try {
+    addCustomModelProfile(elements.customModelProfileName.value, elements.customModelProfileTag.value);
+    elements.customModelProfileName.value = "";
+    elements.customModelProfileTag.value = "";
+    setStatus("Custom model profile added.", "success");
+    render();
+  } catch (error) {
+    setStatus(error.message, "error");
+    render();
   }
 });
 

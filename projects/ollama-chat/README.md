@@ -11,6 +11,7 @@ It now supports:
 - configurable tool profiles and resource budgets for smaller local models
 - stricter grounded answers for repo questions
 - a local browser UI with sessions, repo browsing, and tool activity
+- model profiles (quick shortcuts to swap Ollama tags) and stop during streaming generation
 
 ## Run
 
@@ -65,7 +66,15 @@ http://127.0.0.1:4317
 
 ## Browser UI
 
-The browser UI is served locally from `server.mjs` and adds:
+Served from `server.mjs`.
+
+### Model profiles
+
+The header **Model profile** menu switches the active Ollama model tag without resetting chat history (same as changing **Model**, but grouped as shortcuts). Built-in profiles are defined in `model-profiles.mjs` (General → `phi4-mini`, Coding → `qwen2.5-coder:3b`, Heavy → `qwen2.5:7b`). If a tag is not installed locally, the UI falls back to the nearest name match or the server default.
+
+In Control Center you can add **custom model profiles** (name + tag); they are stored in `localStorage` for this browser only.
+
+**Stop** cancels an in-flight streamed reply: the browser aborts the request, the server aborts the Ollama call, and the last user message is rolled back so you can edit and resend.
 
 - session sidebar
 - model and preset controls
@@ -136,6 +145,6 @@ That directory is ignored by git and is meant for local use only.
 
 ## Notes
 
-On memory-constrained machines, start with `llama3.2:3b` as the default.
+On memory-constrained machines, the default is `phi4-mini` (good reasoning and code for ~3–4B). Override with `OLLAMA_MODEL` if you prefer another tag.
 
 If you are using different hardware, adjust the model choice accordingly.
