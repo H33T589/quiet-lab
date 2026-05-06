@@ -36,8 +36,8 @@ import {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, "public");
-const host = process.env.OLLAMA_CHAT_HOST || "127.0.0.1";
-const port = Number.parseInt(process.env.OLLAMA_CHAT_PORT || "4317", 10);
+const defaultHost = process.env.OLLAMA_CHAT_HOST || "127.0.0.1";
+const defaultPort = Number.parseInt(process.env.OLLAMA_CHAT_PORT || "4317", 10);
 const defaultModel = process.env.OLLAMA_MODEL || "llama3.2:3b";
 const execFileAsync = promisify(execFile);
 const maxJsonBodyBytes = 1_000_000;
@@ -86,18 +86,19 @@ function sendBadRequest(res, message) {
   sendJson(res, 400, { error: message });
 }
 
-async function readJsonBody(req) {
+export async function readJsonBody(req) {
   const chunks = [];
   let totalBytes = 0;
 
   for await (const chunk of req) {
-    totalBytes += chunk.byteLength;
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
+    totalBytes += buffer.byteLength;
 
     if (totalBytes > maxJsonBodyBytes) {
       throw new HttpError(413, "Request body is too large.");
     }
 
-    chunks.push(chunk);
+    chunks.push(buffer);
   }
 
   if (!chunks.length) {
@@ -138,37 +139,42 @@ function sendEvent(res, event, data) {
   res.write(`data: ${JSON.stringify(data)}\n\n`);
 }
 
-function isAllowedHost(hostHeader) {
+export function isAllowedHost(hostHeader, allowedHost = defaultHost) {
   const rawHost = String(hostHeader || "").toLowerCase();
-  const hostname = rawHost.replace(/^\[/, "").replace(/\](:\d+)?$/, "").replace(/:\d+$/, "");
+  const hostname = rawHost.startsWith("[")
+    ? rawHost.slice(1, rawHost.indexOf("]"))
+    : rawHost.replace(/:\d+$/, "");
   const allowed = new Set(["127.0.0.1", "localhost", "::1"]);
 
-  if (host && host !== "0.0.0.0" && host !== "::") {
-    allowed.add(host.toLowerCase());
+  if (allowedHost && allowedHost !== "0.0.0.0" && allowedHost !== "::") {
+    allowed.add(allowedHost.toLowerCase());
   }
 
   return allowed.has(hostname);
 }
 
-function isAllowedOrigin(originHeader) {
+export function isAllowedOrigin(originHeader, allowedHost = defaultHost) {
   if (!originHeader) {
     return true;
   }
 
   try {
     const origin = new URL(originHeader);
-    return isAllowedHost(origin.host);
+    return isAllowedHost(origin.host, allowedHost);
   } catch {
     return false;
   }
 }
 
-function assertRequestAllowed(req) {
-  if (!isAllowedHost(req.headers.host)) {
+export function assertRequestAllowed(req, allowedHost = defaultHost) {
+  if (!isAllowedHost(req.headers.host, allowedHost)) {
     throw new HttpError(403, "Host is not allowed.");
   }
 
-  if (["POST", "PUT", "PATCH", "DELETE"].includes(req.method || "") && !isAllowedOrigin(req.headers.origin)) {
+  if (
+    ["POST", "PUT", "PATCH", "DELETE"].includes(req.method || "") &&
+    !isAllowedOrigin(req.headers.origin, allowedHost)
+  ) {
     throw new HttpError(403, "Origin is not allowed.");
   }
 }
@@ -556,76 +562,92 @@ async function serveStatic(res, pathname) {
   }
 }
 
-const server = http.createServer(async (req, res) => {
-  try {
-    assertRequestAllowed(req);
-    const url = new URL(req.url || "/", `http://${req.headers.host || "127.0.0.1"}`);
-    const pathname = url.pathname;
+export function createQuietLabServer({ host = defaultHost } = {}) {
+  return http.createServer(async (req, res) => {
+    try {
+      assertRequestAllowed(req, host);
+      const url = new URL(req.url || "/", `http://${req.headers.host || "127.0.0.1"}`);
+      const pathname = url.pathname;
 
-    if (pathname === "/api/meta" && req.method === "GET") {
-      await handleMeta(req, res);
-      return;
+      if (pathname === "/api/meta" && req.method === "GET") {
+        await handleMeta(req, res);
+        return;
+      }
+
+      if (pathname === "/api/workspace/pick") {
+        await handleWorkspacePick(req, res);
+        return;
+      }
+
+      if (pathname === "/api/workspace") {
+        await handleWorkspace(req, res);
+        return;
+      }
+
+      if (pathname === "/api/tooling") {
+        await handleTooling(req, res);
+        return;
+      }
+
+      if (pathname === "/api/sessions" && req.method === "GET") {
+        await handleSessions(req, res);
+        return;
+      }
+
+      if (pathname === "/api/sessions" && req.method === "POST") {
+        await handleCreateSession(req, res);
+        return;
+      }
+
+      if (pathname.startsWith("/api/sessions/")) {
+        await handleSessionById(req, res, pathname);
+        return;
+      }
+
+      if (pathname === "/api/chat/stream" && req.method === "POST") {
+        await handleChatStream(req, res);
+        return;
+      }
+
+      if (pathname === "/api/repo/tree" && req.method === "GET") {
+        await handleRepoTree(req, res, url);
+        return;
+      }
+
+      if (pathname === "/api/repo/file" && req.method === "GET") {
+        await handleRepoFile(req, res, url);
+        return;
+      }
+
+      if (pathname.startsWith("/api/")) {
+        sendNotFound(res);
+        return;
+      }
+
+      await serveStatic(res, pathname);
+    } catch (error) {
+      sendJson(res, error.statusCode || 500, { error: error.message || "Internal server error" });
     }
+  });
+}
 
-    if (pathname === "/api/workspace/pick") {
-      await handleWorkspacePick(req, res);
-      return;
-    }
+export async function startQuietLabServer({ host = defaultHost, port = defaultPort } = {}) {
+  await mkdir(sessionsDir, { recursive: true });
+  await loadWorkspaceState();
 
-    if (pathname === "/api/workspace") {
-      await handleWorkspace(req, res);
-      return;
-    }
+  const server = createQuietLabServer({ host });
 
-    if (pathname === "/api/tooling") {
-      await handleTooling(req, res);
-      return;
-    }
+  await new Promise((resolve) => {
+    server.listen(port, host, resolve);
+  });
 
-    if (pathname === "/api/sessions" && req.method === "GET") {
-      await handleSessions(req, res);
-      return;
-    }
+  return server;
+}
 
-    if (pathname === "/api/sessions" && req.method === "POST") {
-      await handleCreateSession(req, res);
-      return;
-    }
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  const server = await startQuietLabServer();
+  const address = server.address();
+  const activePort = typeof address === "object" && address ? address.port : defaultPort;
 
-    if (pathname.startsWith("/api/sessions/")) {
-      await handleSessionById(req, res, pathname);
-      return;
-    }
-
-    if (pathname === "/api/chat/stream" && req.method === "POST") {
-      await handleChatStream(req, res);
-      return;
-    }
-
-    if (pathname === "/api/repo/tree" && req.method === "GET") {
-      await handleRepoTree(req, res, url);
-      return;
-    }
-
-    if (pathname === "/api/repo/file" && req.method === "GET") {
-      await handleRepoFile(req, res, url);
-      return;
-    }
-
-    if (pathname.startsWith("/api/")) {
-      sendNotFound(res);
-      return;
-    }
-
-    await serveStatic(res, pathname);
-  } catch (error) {
-    sendJson(res, error.statusCode || 500, { error: error.message || "Internal server error" });
-  }
-});
-
-await mkdir(sessionsDir, { recursive: true });
-await loadWorkspaceState();
-
-server.listen(port, host, () => {
-  console.log(`quiet-lab UI listening on http://${host}:${port}`);
-});
+  console.log(`quiet-lab UI listening on http://${defaultHost}:${activePort}`);
+}
