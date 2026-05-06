@@ -17,6 +17,11 @@ import {
   saveSessionAs,
   sessionsDir,
 } from "./engine.mjs";
+import {
+  clearProjectMemory,
+  loadProjectMemory,
+  setProjectUserNotes,
+} from "./memory.mjs";
 import { listPresets } from "./presets.mjs";
 import { resolvePublicFilePath } from "./public-static.mjs";
 import {
@@ -330,6 +335,26 @@ async function handleTooling(req, res) {
   });
 }
 
+async function handleMemory(req, res) {
+  if (req.method === "GET") {
+    sendJson(res, 200, { memory: await loadProjectMemory() });
+    return;
+  }
+
+  if (req.method === "DELETE") {
+    sendJson(res, 200, { memory: await clearProjectMemory() });
+    return;
+  }
+
+  if (req.method !== "POST") {
+    sendMethodNotAllowed(res);
+    return;
+  }
+
+  const body = await readJsonBody(req);
+  sendJson(res, 200, { memory: await setProjectUserNotes(body.userNotes || []) });
+}
+
 async function handleSessions(_req, res) {
   sendJson(res, 200, { sessions: await listSessionSummaries() });
 }
@@ -586,6 +611,11 @@ export function createQuietLabServer({ host = defaultHost } = {}) {
 
       if (pathname === "/api/tooling") {
         await handleTooling(req, res);
+        return;
+      }
+
+      if (pathname === "/api/memory") {
+        await handleMemory(req, res);
         return;
       }
 

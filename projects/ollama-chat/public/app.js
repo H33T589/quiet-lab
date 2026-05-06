@@ -6,6 +6,7 @@ const state = {
   filePreview: null,
   messages: [],
   meta: null,
+  memory: null,
   model: null,
   preset: null,
   repoEntries: [],
@@ -59,6 +60,11 @@ const elements = {
   drawerSwitchWorkspace: document.querySelector("#drawer-switch-workspace"),
   hiddenPathList: document.querySelector("#hidden-path-list"),
   messageTemplate: document.querySelector("#message-template"),
+  memoryClearButton: document.querySelector("#memory-clear-button"),
+  memoryNotesInput: document.querySelector("#memory-notes-input"),
+  memoryRefreshButton: document.querySelector("#memory-refresh-button"),
+  memorySaveButton: document.querySelector("#memory-save-button"),
+  memorySummary: document.querySelector("#memory-summary"),
   modelSelect: document.querySelector("#model-select"),
   newSessionButton: document.querySelector("#new-session-button"),
   presetSelect: document.querySelector("#preset-select"),
@@ -473,6 +479,7 @@ function renderControlCenter() {
     .join("");
 
   renderCustomPresets();
+  renderMemory();
   renderDiagnostics();
 }
 
@@ -501,6 +508,56 @@ function renderCustomPresets() {
   }
 }
 
+function memoryCount(memory) {
+  if (!memory?.project) {
+    return 0;
+  }
+
+  return [
+    memory.project.stack,
+    memory.project.entrypoints,
+    memory.project.packageScripts,
+    memory.project.importantFiles,
+    memory.project.knownRisks,
+    memory.project.recommendedTests,
+    memory.userNotes,
+  ].reduce((total, values) => total + (Array.isArray(values) ? values.length : 0), 0);
+}
+
+function renderMemoryList(label, values = [], formatter = (value) => value) {
+  const items = values.slice(0, 6);
+
+  if (!items.length) {
+    return "";
+  }
+
+  return `
+    <div class="memory-group">
+      <strong>${escapeHtml(label)}</strong>
+      <ul>${items.map((item) => `<li>${escapeHtml(formatter(item))}</li>`).join("")}</ul>
+    </div>
+  `;
+}
+
+function renderMemory() {
+  const memory = state.memory;
+
+  if (!memory || !memory.updatedAt) {
+    elements.memorySummary.innerHTML = `<p class="empty-state">No project memory yet. Run Map repo, Review, Tests, or add notes.</p>`;
+    elements.memoryNotesInput.value = memory?.userNotes?.join("\n") || "";
+    return;
+  }
+
+  elements.memorySummary.innerHTML = [
+    `<div class="memory-meta"><span>${escapeHtml(memory.repoName || "No repo")}</span><span>${escapeHtml(formatRelativeTime(memory.updatedAt))}</span></div>`,
+    renderMemoryList("Stack", memory.project?.stack || []),
+    renderMemoryList("Entry Points", memory.project?.entrypoints || [], (value) => `\`${value}\``),
+    renderMemoryList("Known Risks", memory.project?.knownRisks || []),
+    renderMemoryList("Recommended Tests", memory.project?.recommendedTests || []),
+  ].join("");
+  elements.memoryNotesInput.value = (memory.userNotes || []).join("\n");
+}
+
 function renderDiagnostics() {
   const config = state.tooling.config;
   const items = [
@@ -510,6 +567,7 @@ function renderDiagnostics() {
     ["Budget", config?.budget || "unknown"],
     ["Enabled tools", String(config?.enabledTools?.length || 0)],
     ["Tool events", String(state.toolEvents.length)],
+    ["Memory facts", String(memoryCount(state.memory))],
     ["Ollama", state.meta?.ollamaReachable ? "online" : "offline"],
     ["Repository", state.workspace.repoName || "none"],
   ];
@@ -554,6 +612,10 @@ function syncControls() {
   elements.drawerSaveSession.disabled = state.sending || !state.currentSessionId || getVisibleMessages().length === 0;
   elements.drawerClearTools.disabled = state.sending || !state.toolEvents.length;
   elements.drawerSwitchWorkspace.disabled = state.sending;
+  elements.memoryClearButton.disabled = state.sending || !state.memory?.updatedAt;
+  elements.memoryNotesInput.disabled = state.sending;
+  elements.memoryRefreshButton.disabled = state.sending;
+  elements.memorySaveButton.disabled = state.sending;
   elements.sendButton.textContent = state.sending ? "Sending..." : "Send";
   for (const button of elements.quickPromptButtons) {
     button.disabled = state.sending;
@@ -614,6 +676,34 @@ async function loadTooling() {
     profiles: payload.profiles || {},
     tools: payload.tools || [],
   };
+}
+
+async function loadMemory() {
+  const payload = await fetchJson("/api/memory");
+  state.memory = payload.memory;
+}
+
+async function saveMemoryNotes() {
+  const notes = elements.memoryNotesInput.value
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const payload = await fetchJson("/api/memory", {
+    method: "POST",
+    body: JSON.stringify({ userNotes: notes }),
+  });
+  state.memory = payload.memory;
+  setStatus("Project memory notes saved.", "success");
+  render();
+}
+
+async function clearMemory() {
+  const payload = await fetchJson("/api/memory", {
+    method: "DELETE",
+  });
+  state.memory = payload.memory;
+  setStatus("Project memory cleared.", "neutral");
+  render();
 }
 
 async function updateTooling(update) {
@@ -795,6 +885,7 @@ async function applyWorkspacePayload(payload) {
   state.toolEvents = [];
   elements.repoFilterInput.value = "";
   await loadRepoTree(".");
+  await loadMemory();
   closeWorkspaceDialog();
   closeControlCenter();
   setStatus(`Repository switched to ${payload.repoName}.`, "success");
@@ -1037,6 +1128,7 @@ async function streamChat(message) {
     }
 
     await loadSessions();
+    await loadMemory();
     await loadSession(state.currentSessionId);
   } catch (error) {
     assistant.content = `Error: ${error.message}`;
@@ -1060,6 +1152,7 @@ async function init() {
   await loadMeta();
   await loadWorkspace();
   await loadTooling();
+  await loadMemory();
   await loadRepoTree(".");
 
   if (!state.sessions.length) {
@@ -1118,6 +1211,23 @@ elements.drawerClearTools.addEventListener("click", () => {
   state.toolEvents = [];
   setStatus("Tool activity cleared.", "neutral");
   render();
+});
+
+elements.memoryRefreshButton.addEventListener("click", () => {
+  loadMemory()
+    .then(() => {
+      setStatus("Project memory refreshed.", "neutral");
+      render();
+    })
+    .catch(showError);
+});
+
+elements.memorySaveButton.addEventListener("click", () => {
+  saveMemoryNotes().catch(showError);
+});
+
+elements.memoryClearButton.addEventListener("click", () => {
+  clearMemory().catch(showError);
 });
 
 elements.customPresetForm.addEventListener("submit", (event) => {

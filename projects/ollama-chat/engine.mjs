@@ -1,6 +1,11 @@
 import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  formatProjectMemoryContext,
+  loadProjectMemory,
+  updateProjectMemoryFromBootstrap,
+} from "./memory.mjs";
 import { listPresets, resolvePreset } from "./presets.mjs";
 import {
   executeToolCall,
@@ -181,8 +186,8 @@ function formatBootstrapContext(results) {
   ].join("\n\n");
 }
 
-function messagesWithBootstrapContext(messages, bootstrapContext) {
-  if (!bootstrapContext) {
+function messagesWithBootstrapContext(messages, bootstrapContext, memoryContext = null) {
+  if (!bootstrapContext && !memoryContext) {
     return messages;
   }
 
@@ -191,10 +196,14 @@ function messagesWithBootstrapContext(messages, bootstrapContext) {
     {
       role: "user",
       content: [
-        "Attached repository evidence for my previous request:",
+        memoryContext ? "Stored project memory for this repository:" : null,
+        memoryContext,
+        bootstrapContext ? "Attached repository evidence for my previous request:" : null,
         bootstrapContext,
         "Answer my previous request using this repository evidence. Do not ask me to paste the file or provide a repository link if the evidence already contains the needed file or repo details.",
-      ].join("\n\n"),
+      ]
+        .filter(Boolean)
+        .join("\n\n"),
     },
   ];
 }
@@ -637,6 +646,29 @@ function answerToolCapabilityQuestion(userInput) {
   ].join("\n");
 }
 
+function answerMemoryQuestion(userInput, memory) {
+  if (!/\b(memory|remember|remembered|known context|project notes)\b/i.test(userInput)) {
+    return null;
+  }
+
+  if (!memory?.updatedAt) {
+    return `I do not have stored project memory for \`${getWorkspaceName()}\` yet. Run Map repo, Review, Tests, or add notes in Control Center to build it.`;
+  }
+
+  const sections = [
+    `Project memory for \`${memory.repoName}\`:`,
+    memory.project.stack.length ? `Stack:\n${memory.project.stack.map((item) => `- ${item}`).join("\n")}` : null,
+    memory.project.entrypoints.length ? `Entry points:\n${memory.project.entrypoints.slice(0, 12).map((item) => `- \`${item}\``).join("\n")}` : null,
+    memory.project.packageScripts.length ? `Scripts:\n${memory.project.packageScripts.slice(0, 12).map((item) => `- ${item}`).join("\n")}` : null,
+    memory.project.knownRisks.length ? `Known risks:\n${memory.project.knownRisks.slice(0, 12).map((item) => `- ${item}`).join("\n")}` : null,
+    memory.project.recommendedTests.length ? `Recommended tests:\n${memory.project.recommendedTests.slice(0, 12).map((item) => `- ${item}`).join("\n")}` : null,
+    memory.userNotes.length ? `User notes:\n${memory.userNotes.slice(0, 12).map((item) => `- ${item}`).join("\n")}` : null,
+    `Updated: ${memory.updatedAt}.`,
+  ].filter(Boolean);
+
+  return sections.join("\n\n");
+}
+
 function answerFromBootstrap(userInput, bootstrapResults) {
   return (
     answerWorkspaceAttachmentQuestion(userInput) ||
@@ -1063,9 +1095,15 @@ export class ChatSession {
     }
 
     const bootstrapContext = formatBootstrapContext(bootstrapResults);
-    const bootstrapAnswer = answerFromBootstrap(userInput, bootstrapResults);
+    const projectMemory = await loadProjectMemory();
+    const memoryContext = formatProjectMemoryContext(projectMemory);
+    const memoryAnswer = answerMemoryQuestion(userInput, projectMemory);
+    const bootstrapAnswer = memoryAnswer || answerFromBootstrap(userInput, bootstrapResults);
 
     if (bootstrapAnswer) {
+      if (!memoryAnswer && this.model !== "no-network-needed") {
+        await updateProjectMemoryFromBootstrap(userInput, bootstrapResults, bootstrapAnswer);
+      }
       this.messages.push({ role: "assistant", content: bootstrapAnswer });
       await this.save();
       onFinal(bootstrapAnswer);
@@ -1078,7 +1116,7 @@ export class ChatSession {
       const assistant = await requestAssistant({
         baseUrl: this.baseUrl,
         model: this.model,
-        messagesForRequest: messagesWithBootstrapContext(this.messages, bootstrapContext),
+        messagesForRequest: messagesWithBootstrapContext(this.messages, bootstrapContext, memoryContext),
         stream: false,
         includeTools: true,
       });
@@ -1130,7 +1168,7 @@ export class ChatSession {
       baseUrl: this.baseUrl,
       model: this.model,
       messagesForRequest: [
-        ...messagesWithBootstrapContext(this.messages, bootstrapContext),
+        ...messagesWithBootstrapContext(this.messages, bootstrapContext, memoryContext),
         {
           role: "system",
           content:
@@ -1151,7 +1189,7 @@ export class ChatSession {
     const recoveryContent = await requestRecoveryAnswer({
       baseUrl: this.baseUrl,
       model: this.model,
-      messagesForRequest: messagesWithBootstrapContext(this.messages, bootstrapContext),
+      messagesForRequest: messagesWithBootstrapContext(this.messages, bootstrapContext, memoryContext),
     });
 
     if (recoveryContent) {
