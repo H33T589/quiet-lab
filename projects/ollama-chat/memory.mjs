@@ -182,22 +182,6 @@ export async function updateProjectMemoryFromBootstrap(userInput, bootstrapResul
     patch.lockfiles = getToolListField(overview.content, "LOCKFILES");
   }
 
-  if (/review|risk|bug|security|edge case/i.test(userInput) || /Likely risks:/i.test(answerText)) {
-    patch.knownRisks = String(answerText)
-      .split("\n")
-      .map((line) => line.replace(/^-\s+/, "").trim())
-      .filter((line) => /risk|script|lockfile|stack|entry point|lint|test|security/i.test(line))
-      .slice(0, 12);
-  }
-
-  if (/test/i.test(userInput) || /Recommended tests:/i.test(answerText)) {
-    patch.recommendedTests = String(answerText)
-      .split("\n")
-      .map((line) => line.replace(/^-\s+/, "").trim())
-      .filter((line) => /test|safety|session|tool|workflow|path/i.test(line))
-      .slice(0, 12);
-  }
-
   if (dependencies?.content && getToolField(dependencies.content, "STATUS") === "OK") {
     const stack = getToolField(dependencies.content, "STACK");
     patch.stack = uniq([...(patch.stack || []), ...(stack && stack !== "(unknown)" ? stack.split(",") : [])], 16);
@@ -209,20 +193,32 @@ export async function updateProjectMemoryFromBootstrap(userInput, bootstrapResul
   return next;
 }
 
+const MEMORY_CHAR_BUDGET = 1200;
+
 export function formatProjectMemoryContext(memory) {
   if (!memory || !memory.updatedAt) {
     return null;
   }
 
-  const sections = [
+  const lines = [
     `Known project memory for "${memory.repoName}":`,
     memory.project.stack.length ? `Stack: ${memory.project.stack.join(", ")}` : null,
-    memory.project.entrypoints.length ? `Entry points: ${memory.project.entrypoints.slice(0, 8).join(", ")}` : null,
-    memory.project.packageScripts.length ? `Scripts: ${memory.project.packageScripts.slice(0, 8).join("; ")}` : null,
-    memory.project.knownRisks.length ? `Known risks: ${memory.project.knownRisks.slice(0, 8).join("; ")}` : null,
-    memory.project.recommendedTests.length ? `Recommended tests: ${memory.project.recommendedTests.slice(0, 8).join("; ")}` : null,
-    memory.userNotes.length ? `User notes: ${memory.userNotes.slice(0, 12).join("; ")}` : null,
+    memory.project.entrypoints.length ? `Entry points: ${memory.project.entrypoints.slice(0, 6).join(", ")}` : null,
+    memory.project.packageScripts.length ? `Scripts: ${memory.project.packageScripts.slice(0, 6).join("; ")}` : null,
+    memory.project.knownRisks.length ? `Known risks: ${memory.project.knownRisks.slice(0, 6).join("; ")}` : null,
+    memory.project.recommendedTests.length ? `Recommended tests: ${memory.project.recommendedTests.slice(0, 6).join("; ")}` : null,
+    memory.userNotes.length ? `User notes: ${memory.userNotes.slice(0, 8).join("; ")}` : null,
   ].filter(Boolean);
 
-  return sections.length > 1 ? sections.join("\n") : null;
+  if (lines.length <= 1) {
+    return null;
+  }
+
+  let result = lines.join("\n");
+
+  if (result.length > MEMORY_CHAR_BUDGET) {
+    result = result.slice(0, MEMORY_CHAR_BUDGET) + "\n[memory truncated to fit context window]";
+  }
+
+  return result;
 }

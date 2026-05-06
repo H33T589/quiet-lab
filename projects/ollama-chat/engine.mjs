@@ -191,21 +191,38 @@ function messagesWithBootstrapContext(messages, bootstrapContext, memoryContext 
     return messages;
   }
 
-  return [
-    ...messages,
-    {
+  const result = [...messages];
+
+  if (memoryContext) {
+    const systemIndex = result.findIndex((m) => m.role === "system");
+    const memorySystemContent = [
+      result[systemIndex]?.content,
+      "--- Project Memory (persisted facts, refer to these first) ---",
+      memoryContext,
+      "--- End Project Memory ---",
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+
+    if (systemIndex !== -1) {
+      result[systemIndex] = { ...result[systemIndex], content: memorySystemContent };
+    } else {
+      result.unshift({ role: "system", content: memorySystemContent });
+    }
+  }
+
+  if (bootstrapContext) {
+    result.push({
       role: "user",
       content: [
-        memoryContext ? "Stored project memory for this repository:" : null,
-        memoryContext,
-        bootstrapContext ? "Attached repository evidence for my previous request:" : null,
+        "Attached repository evidence for my previous request:",
         bootstrapContext,
         "Answer my previous request using this repository evidence. Do not ask me to paste the file or provide a repository link if the evidence already contains the needed file or repo details.",
-      ]
-        .filter(Boolean)
-        .join("\n\n"),
-    },
-  ];
+      ].join("\n\n"),
+    });
+  }
+
+  return result;
 }
 
 function getBootstrapResult(results, toolName, pathSuffix = null) {
@@ -776,7 +793,13 @@ async function requestAssistant({
         continue;
       }
 
-      const data = JSON.parse(line);
+      let data;
+      try {
+        data = JSON.parse(line);
+      } catch {
+        continue;
+      }
+
       const token = data.message?.content || "";
 
       if (token) {
@@ -787,12 +810,20 @@ async function requestAssistant({
   }
 
   if (buffer.trim()) {
-    const data = JSON.parse(buffer.trim());
-    const token = data.message?.content || "";
+    let data;
+    try {
+      data = JSON.parse(buffer.trim());
+    } catch {
+      data = null;
+    }
 
-    if (token) {
-      onToken(token);
-      content += token;
+    if (data) {
+      const token = data.message?.content || "";
+
+      if (token) {
+        onToken(token);
+        content += token;
+      }
     }
   }
 

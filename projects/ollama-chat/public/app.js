@@ -13,6 +13,7 @@ const state = {
   repoFilter: "",
   sessions: [],
   sending: false,
+  streamTokenCount: 0,
   statusText: "Loading workspace...",
   statusTone: "neutral",
   controlCenterOpen: false,
@@ -228,15 +229,20 @@ function renderStatus() {
 
 function renderSessionStats() {
   const activeSession = state.sessions.find((session) => session.sessionId === state.currentSessionId);
+  const hasMemory = Boolean(state.memory?.updatedAt);
   const stats = [
     `${getVisibleMessages().length} messages`,
     state.model || state.meta?.defaultModel || "no model",
     state.preset || "coder",
     formatRelativeTime(activeSession?.updatedAt),
-  ];
+    hasMemory ? "memory on" : null,
+  ].filter(Boolean);
 
   elements.sessionStats.innerHTML = stats
-    .map((item) => `<span>${escapeHtml(item)}</span>`)
+    .map((item, index) => {
+      const isMemory = hasMemory && index === stats.length - 1;
+      return `<span${isMemory ? ' class="stat-memory"' : ""}>${escapeHtml(item)}</span>`;
+    })
     .join("");
 }
 
@@ -276,14 +282,20 @@ function renderMessages() {
     return;
   }
 
-  for (const message of state.messages) {
-    if (message.role === "system" || message.role === "tool") {
-      continue;
-    }
+  const visible = state.messages.filter((m) => m.role !== "system" && m.role !== "tool");
+  const modelShort = (state.model || state.meta?.defaultModel || "assistant").split(":")[0];
+
+  for (let index = 0; index < visible.length; index++) {
+    const message = visible[index];
+    const isLastAssistant = state.sending && message.role === "assistant" && index === visible.length - 1;
+    const label = message.role === "user" ? "You" : modelShort;
 
     const node = elements.messageTemplate.content.firstElementChild.cloneNode(true);
     node.classList.add(message.role);
-    node.querySelector(".message-meta").textContent = message.role;
+    if (isLastAssistant) {
+      node.classList.add("streaming");
+    }
+    node.querySelector(".message-meta").textContent = label;
     node.querySelector(".message-body").innerHTML = renderMarkdown(message.content || "");
     elements.chatLog.append(node);
   }
@@ -616,7 +628,7 @@ function syncControls() {
   elements.memoryNotesInput.disabled = state.sending;
   elements.memoryRefreshButton.disabled = state.sending;
   elements.memorySaveButton.disabled = state.sending;
-  elements.sendButton.textContent = state.sending ? "Sending..." : "Send";
+  elements.sendButton.textContent = state.sending ? "Waiting…" : "Send";
   for (const button of elements.quickPromptButtons) {
     button.disabled = state.sending;
   }
@@ -1018,6 +1030,7 @@ async function streamChat(message) {
   state.messages.push(userMessage);
   const assistant = addAssistantPlaceholder();
   state.sending = true;
+  state.streamTokenCount = 0;
   setStatus("Sending message...", "busy");
   render();
 
@@ -1060,6 +1073,9 @@ async function streamChat(message) {
 
       if (currentEvent === "token") {
         assistant.content += payload.token;
+        state.streamTokenCount += 1;
+        setStatus(`Generating… ${state.streamTokenCount} tokens`, "busy");
+        elements.statusText.textContent = state.statusText;
         renderMessages();
       }
 
@@ -1088,7 +1104,8 @@ async function streamChat(message) {
         if (state.meta) {
           state.meta.ollamaReachable = true;
         }
-        setStatus("Reply complete.", "success");
+        setStatus(`Reply complete — ${state.streamTokenCount} tokens.`, "success");
+        state.streamTokenCount = 0;
         renderMessages();
       }
 
@@ -1132,6 +1149,7 @@ async function streamChat(message) {
     await loadSession(state.currentSessionId);
   } catch (error) {
     assistant.content = `Error: ${error.message}`;
+    state.streamTokenCount = 0;
 
     if (state.meta && /Could not reach Ollama/i.test(error.message)) {
       state.meta.ollamaReachable = false;

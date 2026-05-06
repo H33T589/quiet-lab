@@ -390,6 +390,21 @@ textarea {
   background: rgba(255, 255, 255, 0.02);
 }
 
+@keyframes blink-cursor {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+.message.assistant.streaming .message-body::after {
+  content: "▍";
+  display: inline-block;
+  margin-left: 2px;
+  color: var(--accent);
+  animation: blink-cursor 0.9s ease infinite;
+  font-size: 0.85em;
+  vertical-align: baseline;
+}
+
 .message-meta {
   color: var(--muted);
   font: 600 0.74rem/1.2 var(--mono);
@@ -632,6 +647,12 @@ textarea {
   color: var(--muted);
   font: 0.76rem/1.2 var(--mono);
   padding: 6px 8px;
+}
+
+.stat-strip .stat-memory {
+  border-color: rgba(183, 249, 96, 0.3);
+  background: rgba(183, 249, 96, 0.08);
+  color: var(--accent-strong);
 }
 
 .tool-events {
