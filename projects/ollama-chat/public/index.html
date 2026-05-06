@@ -72,11 +72,17 @@
         <section id="chat-log" class="chat-log"></section>
 
         <form id="composer-form" class="composer">
-          <div class="quick-prompts" aria-label="Quick prompts">
-            <button type="button" data-prompt="Summarize this repository structure and the main entry points.">Repo summary</button>
-            <button type="button" data-file-prompt="Explain this file and call out risks:">Explain file</button>
-            <button type="button" data-prompt="Review the current app code for bugs, edge cases, and missing tests.">Find risks</button>
-            <button type="button" data-prompt="Suggest focused tests for this app.">Test ideas</button>
+          <div class="workflow-strip" aria-label="Repo workflows">
+            <div class="workflow-strip-copy">
+              <span>Workflows</span>
+              <strong>Evidence-first repo actions</strong>
+            </div>
+            <div class="quick-prompts">
+              <button type="button" data-prompt="Summarize this repository structure and the main entry points.">Map repo</button>
+              <button type="button" data-prompt="Review the current app code for bugs, edge cases, security risks, and missing tests.">Review</button>
+              <button type="button" data-prompt="Suggest focused tests for this app.">Tests</button>
+              <button type="button" data-file-prompt="Explain this file and call out risks:">File review</button>
+            </div>
           </div>
           <textarea
             id="composer-input"

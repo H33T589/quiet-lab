@@ -17,6 +17,8 @@ const sessionIds = [
   "client-retro-2",
   "attached-repo-test",
   "repo-overview-test",
+  "repo-risk-test",
+  "test-plan-test",
   "embedded-tool-json-test",
 ];
 
@@ -115,6 +117,28 @@ test("chat summarizes repository structure from tool evidence before asking the 
   assert.match(result.text, /I inspected the attached repository `ollama-chat`/);
   assert.match(result.text, /Main entry points:/);
   assert.match(result.text, /`server\.mjs`|`index\.mjs`|`public\/index\.html`/);
+  assert.doesNotMatch(result.text, /provide a URL|paste|without accessing/i);
+});
+
+test("chat reviews repo risks from tool evidence before asking the model", async () => {
+  await attachCodebase(path.join(repoRoot, "projects/ollama-chat"), { persist: false });
+  const session = new ChatSession({ sessionId: "repo-risk-test", model: "no-network-needed" });
+  const result = await session.chat("Review the current app code for bugs, edge cases, security risks, and missing tests.");
+
+  assert.match(result.text, /I inspected `ollama-chat`/);
+  assert.match(result.text, /Likely risks:/);
+  assert.match(result.text, /Scripts found:/);
+  assert.doesNotMatch(result.text, /provide a URL|paste|without accessing/i);
+});
+
+test("chat suggests focused tests from repo evidence before asking the model", async () => {
+  await attachCodebase(path.join(repoRoot, "projects/ollama-chat"), { persist: false });
+  const session = new ChatSession({ sessionId: "test-plan-test", model: "no-network-needed" });
+  const result = await session.chat("Suggest focused tests for this app.");
+
+  assert.match(result.text, /Focused test plan for `ollama-chat`/);
+  assert.match(result.text, /Recommended tests:/);
+  assert.match(result.text, /Path safety/);
   assert.doesNotMatch(result.text, /provide a URL|paste|without accessing/i);
 });
 

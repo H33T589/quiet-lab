@@ -518,6 +518,108 @@ function answerRepoOverviewQuestion(userInput, bootstrapResults) {
     .join("\n\n");
 }
 
+function answerRepoRiskQuestion(userInput, bootstrapResults) {
+  if (!/\b(review|risks?|bugs?|edge cases?|security|quality)\b/i.test(userInput)) {
+    return null;
+  }
+
+  const overview = getBootstrapResult(bootstrapResults, "get_repo_overview");
+  const dependencies = getBootstrapResult(bootstrapResults, "inspect_dependencies");
+
+  if (!overview || getToolField(overview.content, "STATUS") !== "OK") {
+    return null;
+  }
+
+  const repo = getToolField(overview.content, "REPO") || getWorkspaceName();
+  const stack = getToolField(overview.content, "STACK") || "(unknown)";
+  const scripts = getToolListField(overview.content, "PACKAGE_SCRIPTS");
+  const entrypoints = getToolListField(overview.content, "ENTRYPOINTS").slice(0, 8);
+  const importantFiles = getToolListField(overview.content, "IMPORTANT_FILES").slice(0, 8);
+  const lockfiles = getToolListField(overview.content, "LOCKFILES");
+  const manifestBlock = dependencies ? getToolBlock(dependencies.content, "MANIFESTS") : "";
+  const hasTestScript = scripts.some((script) => /:\s*test\s*=|:\s*test\s/.test(script));
+  const hasLintScript = scripts.some((script) => /:\s*lint\s*=|:\s*lint\s/.test(script));
+  const risks = [];
+
+  if (!hasTestScript) {
+    risks.push("No package `test` script was found in the inspected manifests.");
+  }
+
+  if (!hasLintScript) {
+    risks.push("No package `lint` script was found, so static checks are not part of the normal workflow.");
+  }
+
+  if (!lockfiles.length && /dependencies=|devDependencies=/i.test(manifestBlock)) {
+    risks.push("No lockfile was found, so installs may drift across machines.");
+  }
+
+  if (stack === "(unknown)") {
+    risks.push("The stack was not confidently detected from dependency manifests or entry files.");
+  }
+
+  if (!entrypoints.length) {
+    risks.push("No clear entry point was found; startup or routing may need manual inspection.");
+  }
+
+  return [
+    `I inspected \`${repo}\` using repo tools and found these review targets.`,
+    `Stack: ${stack}.`,
+    risks.length
+      ? `Likely risks:\n${risks.map((risk) => `- ${risk}`).join("\n")}`
+      : "Likely risks:\n- I do not see obvious repo-level risks from the overview, scripts, and dependency metadata alone.",
+    scripts.length
+      ? `Scripts found:\n${scripts.slice(0, 8).map((script) => `- ${script}`).join("\n")}`
+      : "Scripts found:\n- none",
+    entrypoints.length
+      ? `Files to inspect next:\n${entrypoints.map((file) => `- \`${file}\``).join("\n")}`
+      : importantFiles.length
+        ? `Files to inspect next:\n${importantFiles.map((file) => `- \`${file}\``).join("\n")}`
+        : null,
+    "For a deeper review, select one of those files and run the file review workflow.",
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+function answerTestPlanQuestion(userInput, bootstrapResults) {
+  if (!/\b(test ideas?|test plan|focused tests?|suggest.*tests?|missing tests?)\b/i.test(userInput)) {
+    return null;
+  }
+
+  const overview = getBootstrapResult(bootstrapResults, "get_repo_overview");
+
+  if (!overview || getToolField(overview.content, "STATUS") !== "OK") {
+    return null;
+  }
+
+  const repo = getToolField(overview.content, "REPO") || getWorkspaceName();
+  const scripts = getToolListField(overview.content, "PACKAGE_SCRIPTS");
+  const entrypoints = getToolListField(overview.content, "ENTRYPOINTS");
+  const importantFiles = getToolListField(overview.content, "IMPORTANT_FILES");
+  const targets = [...new Set([...entrypoints, ...importantFiles])].slice(0, 8);
+  const hasTestScript = scripts.some((script) => /:\s*test\s*=|:\s*test\s/.test(script));
+  const ideas = [
+    "Path safety: traversal, absolute paths, null bytes, symlink escapes, and hidden folders stay blocked.",
+    "Session safety: saved session JSON does not expose absolute workspace paths or hidden local state.",
+    "Tool determinism: broad repo prompts collect overview/dependency evidence before the model answers.",
+    "Tool-call recovery: JSON tool calls wrapped in prose or code fences are still executed once.",
+    "UI workflow behavior: workflow buttons insert the expected prompt and selected-file workflows require a selected file.",
+  ];
+
+  return [
+    `Focused test plan for \`${repo}\`:`,
+    hasTestScript
+      ? `Existing test script:\n${scripts.filter((script) => /:\s*test\s*=|:\s*test\s/.test(script)).map((script) => `- ${script}`).join("\n")}`
+      : "Existing test script:\n- none found; add one before relying on this project for repeatable changes.",
+    `Recommended tests:\n${ideas.map((idea) => `- ${idea}`).join("\n")}`,
+    targets.length
+      ? `Good files to target first:\n${targets.map((file) => `- \`${file}\``).join("\n")}`
+      : null,
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+}
+
 function answerToolCapabilityQuestion(userInput) {
   if (!/\b(what tools|which tools|tools.*access|access.*tools|how can you help)\b/i.test(userInput)) {
     return null;
@@ -539,10 +641,12 @@ function answerFromBootstrap(userInput, bootstrapResults) {
   return (
     answerWorkspaceAttachmentQuestion(userInput) ||
     answerToolCapabilityQuestion(userInput) ||
+    answerPackageJsonQuestion(userInput, bootstrapResults) ||
+    answerRepoRiskQuestion(userInput, bootstrapResults) ||
+    answerTestPlanQuestion(userInput, bootstrapResults) ||
     answerRepoOverviewQuestion(userInput, bootstrapResults) ||
     answerPromptFileQuestion(userInput, bootstrapResults) ||
     answerPresetQuestion(userInput, bootstrapResults) ||
-    answerPackageJsonQuestion(userInput, bootstrapResults) ||
     answerReadmeQuestion(userInput, bootstrapResults) ||
     answerCommitabilityQuestion(userInput, bootstrapResults)
   );
