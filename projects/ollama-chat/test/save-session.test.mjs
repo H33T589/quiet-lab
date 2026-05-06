@@ -15,6 +15,9 @@ const sessionIds = [
   "save-session-source-test",
   "client-retro",
   "client-retro-2",
+  "attached-repo-test",
+  "repo-overview-test",
+  "embedded-tool-json-test",
 ];
 
 function removeTestSessions() {
@@ -95,6 +98,26 @@ test("chat answers tool capability questions from quiet-lab tooling", async () =
   assert.match(result.text, /summarize the repository structure/);
 });
 
+test("chat confirms the attached repository without asking for a URL", async () => {
+  await attachCodebase(path.join(repoRoot, "projects/ollama-chat"), { persist: false });
+  const session = new ChatSession({ sessionId: "attached-repo-test", model: "no-network-needed" });
+  const result = await session.chat("I attached it on my desktop UI. Can you see it yet?");
+
+  assert.match(result.text, /attached repository `ollama-chat`/);
+  assert.doesNotMatch(result.text, /URL|upload|paste/i);
+});
+
+test("chat summarizes repository structure from tool evidence before asking the model", async () => {
+  await attachCodebase(path.join(repoRoot, "projects/ollama-chat"), { persist: false });
+  const session = new ChatSession({ sessionId: "repo-overview-test", model: "no-network-needed" });
+  const result = await session.chat("Summarize this repository structure and the main entry points.");
+
+  assert.match(result.text, /I inspected the attached repository `ollama-chat`/);
+  assert.match(result.text, /Main entry points:/);
+  assert.match(result.text, /`server\.mjs`|`index\.mjs`|`public\/index\.html`/);
+  assert.doesNotMatch(result.text, /provide a URL|paste|without accessing/i);
+});
+
 test("chat explains package.json from attached repo evidence", async () => {
   await attachCodebase(path.join(repoRoot, "projects/ollama-chat"), { persist: false });
   const session = new ChatSession({ sessionId: "save-session-source-test", model: "no-network-needed" });
@@ -103,4 +126,41 @@ test("chat explains package.json from attached repo evidence", async () => {
   assert.match(result.text, /I read `package\.json`/);
   assert.match(result.text, /`test` -> `node --test test\/\*\.test\.mjs`/);
   assert.doesNotMatch(result.text, /provide a URL|paste/i);
+});
+
+test("chat executes tool JSON even when the model wraps it in prose", async () => {
+  await attachCodebase(path.join(repoRoot, "projects/ollama-chat"), { persist: false });
+  const originalFetch = globalThis.fetch;
+  const responses = [
+    {
+      message: {
+        content: [
+          "I will search now.",
+          "```json",
+          "{\"name\":\"search_repo\",\"arguments\":{\"query\":\"createSessionIdFromTitle\"}}",
+          "```",
+        ].join("\n"),
+      },
+    },
+    {
+      message: {
+        content: "The search found `createSessionIdFromTitle` in the session engine tests and implementation.",
+      },
+    },
+  ];
+
+  globalThis.fetch = async () => ({
+    ok: true,
+    json: async () => responses.shift(),
+  });
+
+  try {
+    const session = new ChatSession({ sessionId: "embedded-tool-json-test", model: "mock-model" });
+    const result = await session.chat("search for createSessionIdFromTitle");
+
+    assert.match(result.text, /search found `createSessionIdFromTitle`/);
+    assert.equal(result.toolEvents.some((event) => event.call.function.name === "search_repo"), true);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });

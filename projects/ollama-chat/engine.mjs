@@ -54,7 +54,7 @@ function shouldUseRepoTools(userInput, preset) {
     return true;
   }
 
-  return /\b(repo|repository|file|files|folder|directory|path|paths|readme|preset|presets|tool|tools|search|read|edit|codebase|source|line|lines|commit|gitignore)\b/i.test(
+  return /\b(repo|repository|attached|workspace|file|files|folder|directory|path|paths|readme|preset|presets|tool|tools|search|read|edit|codebase|source|line|lines|commit|gitignore)\b/i.test(
     userInput,
   ) || /\b(code|site|app|project|review|bugs?|risks?|edge cases?|tests?|entry ?points?|stack|dependencies)\b/i.test(
     userInput,
@@ -108,7 +108,7 @@ async function buildBootstrapContext(userInput) {
   }
 
   const hintedPaths = extractPathLikeHints(userInput);
-  const asksBroadOverview = /\b(what is|what's|explain|summarize|overview|how it works|how does it work|architecture|structure|codebase|project|site|app|entry point|entrypoint|main files?)\b/i.test(
+  const asksBroadOverview = /\b(what is|what's|explain|summarize|overview|how it works|how does it work|architecture|structure|repo|repository|attached|workspace|codebase|check it out|look at|project|site|app|entry point|entrypoint|main files?)\b/i.test(
     userInput,
   );
   const asksDependencies = /\b(dependencies|package|packages|framework|stack|library|libraries|build|scripts?|devdependencies|npm|pnpm|yarn|vite|next|react|astro)\b/i.test(
@@ -227,6 +227,17 @@ function getToolBlock(content, field) {
   }
 
   return content.slice(index + marker.length).trim();
+}
+
+function getToolListField(content, field) {
+  const match = content.match(new RegExp(`(?:^|\\n)${field}:\\s*(?:\\n([\\s\\S]*?))?(?=\\n[A-Z_]+:|$)`));
+  const raw = match?.[1] || "";
+
+  return raw
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .filter((line) => line !== "(none)" && line !== "(unknown)");
 }
 
 function getReadRepoFileText(content) {
@@ -462,6 +473,51 @@ function answerCommitabilityQuestion(userInput, bootstrapResults) {
   return null;
 }
 
+function answerWorkspaceAttachmentQuestion(userInput) {
+  if (
+    !/\b(attached|workspace|codebase|repo|repository)\b/i.test(userInput) ||
+    !/\b(can you see|see it|check it out|look at|have access|attached)\b/i.test(userInput)
+  ) {
+    return null;
+  }
+
+  if (!hasAttachedCodebase()) {
+    return "No codebase is attached right now. Attach a repository folder from the workspace panel, then ask again.";
+  }
+
+  return `Yes. I can see the attached repository \`${getWorkspaceName()}\` through quiet-lab's read-only repo tools. Ask for a structure summary, entry points, package scripts, dependencies, or a specific file review.`;
+}
+
+function answerRepoOverviewQuestion(userInput, bootstrapResults) {
+  if (!/\b(summarize|overview|structure|entry ?points?|what is|what's|how it works|check it out|look at)\b/i.test(userInput)) {
+    return null;
+  }
+
+  const overview = getBootstrapResult(bootstrapResults, "get_repo_overview");
+
+  if (!overview || getToolField(overview.content, "STATUS") !== "OK") {
+    return null;
+  }
+
+  const repo = getToolField(overview.content, "REPO") || getWorkspaceName();
+  const stack = getToolField(overview.content, "STACK") || "(unknown)";
+  const topLevel = getToolListField(overview.content, "TOP_LEVEL").slice(0, 12);
+  const scripts = getToolListField(overview.content, "PACKAGE_SCRIPTS").slice(0, 8);
+  const entrypoints = getToolListField(overview.content, "ENTRYPOINTS").slice(0, 10);
+  const importantFiles = getToolListField(overview.content, "IMPORTANT_FILES").slice(0, 10);
+
+  return [
+    `I inspected the attached repository \`${repo}\`.`,
+    `Stack: ${stack}.`,
+    topLevel.length ? `Top-level structure:\n${topLevel.map((item) => `- \`${item}\``).join("\n")}` : null,
+    entrypoints.length ? `Main entry points:\n${entrypoints.map((item) => `- \`${item}\``).join("\n")}` : null,
+    scripts.length ? `Package scripts:\n${scripts.map((item) => `- ${item}`).join("\n")}` : null,
+    importantFiles.length ? `Useful files to inspect next:\n${importantFiles.map((item) => `- \`${item}\``).join("\n")}` : null,
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+}
+
 function answerToolCapabilityQuestion(userInput) {
   if (!/\b(what tools|which tools|tools.*access|access.*tools|how can you help)\b/i.test(userInput)) {
     return null;
@@ -481,7 +537,9 @@ function answerToolCapabilityQuestion(userInput) {
 
 function answerFromBootstrap(userInput, bootstrapResults) {
   return (
+    answerWorkspaceAttachmentQuestion(userInput) ||
     answerToolCapabilityQuestion(userInput) ||
+    answerRepoOverviewQuestion(userInput, bootstrapResults) ||
     answerPromptFileQuestion(userInput, bootstrapResults) ||
     answerPresetQuestion(userInput, bootstrapResults) ||
     answerPackageJsonQuestion(userInput, bootstrapResults) ||
@@ -612,20 +670,38 @@ function stripJsonFence(content) {
 }
 
 function parseContentToolCalls(content) {
-  if (!content || !/^\s*```|^\s*[\[{]/.test(content)) {
+  if (!content || !/```|[\[{]/.test(content)) {
     return [];
   }
 
-  let parsed;
+  const candidates = [stripJsonFence(content)];
+  const fencedBlocks = [...content.matchAll(/```(?:json)?\s*([\s\S]*?)\s*```/gi)].map((match) =>
+    match[1].trim(),
+  );
+  candidates.push(...fencedBlocks);
 
-  try {
-    parsed = JSON.parse(stripJsonFence(content));
-  } catch {
+  const objectBlocks = [...content.matchAll(/(^|\n)\s*(\{[\s\S]*?\})\s*(?=\n|$)/g)].map((match) =>
+    match[2].trim(),
+  );
+  candidates.push(...objectBlocks);
+
+  const parsedValues = [];
+
+  for (const candidate of candidates) {
+    try {
+      parsedValues.push(JSON.parse(candidate));
+    } catch {
+      // Keep scanning; small local models often wrap valid tool JSON in prose.
+    }
+  }
+
+  if (!parsedValues.length) {
     return [];
   }
 
-  const values = Array.isArray(parsed) ? parsed : [parsed];
+  const values = parsedValues.flatMap((parsed) => (Array.isArray(parsed) ? parsed : [parsed]));
   const calls = [];
+  const seen = new Set();
 
   for (const value of values) {
     const name = value?.function?.name || value?.name;
@@ -635,7 +711,15 @@ function parseContentToolCalls(content) {
       continue;
     }
 
-    calls.push(buildToolCall(name, args && typeof args === "object" ? args : {}));
+    const normalizedArgs = args && typeof args === "object" ? args : {};
+    const key = `${name}:${JSON.stringify(normalizedArgs)}`;
+
+    if (seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+    calls.push(buildToolCall(name, normalizedArgs));
   }
 
   return calls;
