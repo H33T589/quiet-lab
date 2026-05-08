@@ -91,6 +91,21 @@ test("custom preset prompts are saved into the session system prompt", async () 
   assert.match(loaded.systemPrompt, /Answer in short operational notes/);
 });
 
+test("save serializes concurrent writes for the same session", async () => {
+  const session = new ChatSession({ sessionId: "save-session-source-test" });
+  session.messages.push({ role: "user", content: "first turn" });
+  const firstSave = session.save();
+
+  session.messages.push({ role: "assistant", content: "second turn" });
+  const secondSave = session.save();
+
+  await Promise.all([firstSave, secondSave]);
+
+  const loaded = new ChatSession({ sessionId: "save-session-source-test" });
+  assert.equal(await loaded.load(), true);
+  assert.equal(loaded.messages.at(-1)?.content, "second turn");
+});
+
 test("chat answers tool capability questions from quiet-lab tooling", async () => {
   await attachCodebase(repoRoot, { persist: false });
   const session = new ChatSession({ sessionId: "save-session-source-test", model: "no-network-needed" });

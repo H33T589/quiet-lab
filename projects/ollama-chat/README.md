@@ -50,8 +50,11 @@ http://127.0.0.1:4317
 - `OLLAMA_BASE_URL`: defaults to `http://127.0.0.1:11434`
 - `OLLAMA_CHAT_HOST`: defaults to `127.0.0.1`
 - `OLLAMA_CHAT_PORT`: defaults to `4317`
+- `OLLAMA_CHAT_TOKEN`: optional API token; required when binding to `0.0.0.0` or `::`
 - `OLLAMA_SYSTEM`: optional system prompt
 - `OLLAMA_PRESET`: default preset if no CLI preset is passed
+- `OLLAMA_REPO_ROOT`: attached repository root for CLI mode (defaults to the workspace root)
+- `OLLAMA_SESSION`: default CLI session id (defaults to `latest`)
 - `OLLAMA_TOOL_PROFILE`: `minimal`, `explore`, `coding`, `debug`, or `deep`; defaults to `explore`
 - `OLLAMA_RESOURCE_BUDGET`: `low`, `balanced`, or `expanded`; defaults to the profile budget
 
@@ -67,6 +70,25 @@ http://127.0.0.1:4317
 ## Browser UI
 
 Served from `server.mjs`.
+
+## Screenshots
+
+Drop screenshots into `docs/images/` using the filenames below:
+
+![Main chat view](./docs/images/chat-main.png)
+_Main chat with session list, composer, and streamed reply._
+
+![Control Center](./docs/images/control-center.png)
+_Tool profiles/budgets, model profiles, and preset controls._
+
+![Repository attach and tree](./docs/images/repo-attach-and-tree.png)
+_Workspace attach flow with repo tree and file preview._
+
+![Tool activity](./docs/images/tool-activity.png)
+_A tool-backed response showing tool calls and results._
+
+![Project memory panel](./docs/images/memory-panel.png)
+_Project memory summary and user notes._
 
 ### Model profiles
 
@@ -113,11 +135,11 @@ The model can use a small set of read-only tools inside the attached codebase:
 - `search_repo`
 - `summarize_file_symbols`
 
-These tools are intentionally limited to the attached repository root. They do not write files, run shell commands, or access hidden folders such as `.git`, `.vscode`, `.idea`, `node_modules`, and common generated output directories.
+These tools are intentionally limited to the attached repository root. They do not write files, run shell commands, or access the app's configured hidden paths (for example `.git`, `.vscode`, `.idea`, `node_modules`, `models/.ollama`, and local `sessions` data).
 
 Tooling is now routed through profiles and resource budgets so small Ollama models do not receive every possible tool or oversized results. The default `explore` profile uses the `low` budget:
 
-- `minimal`: file listing and file reading only — `low` budget
+- `minimal`: repo overview, file listing, and file reading — `low` budget
 - `explore`: repo summaries, stack detection, entry points, search, and file reads — `low` budget (default)
 - `coding`: all of the above plus multi-file reads and symbol summaries — `balanced` budget
 - `debug`: narrow mode for tracing files, symbols, and matching code — `balanced` budget
@@ -142,6 +164,58 @@ Add free-form notes in Control Center → Project Memory → User Notes. These a
 Session state is saved locally to `projects/ollama-chat/sessions/latest.json`.
 
 That directory is ignored by git and is meant for local use only.
+
+## Security Notes
+
+- The browser API is intended for local use.
+- When `OLLAMA_CHAT_HOST` is loopback (`127.0.0.1`/`localhost`/`::1`), only loopback clients are accepted.
+- If you bind to `0.0.0.0` or `::`, set `OLLAMA_CHAT_TOKEN`; startup fails without it.
+- For browser access with a token, open the UI as `http://HOST:PORT/?token=YOUR_TOKEN` once; the UI stores it in local browser storage for later requests.
+- For mutation routes (`POST`, `PUT`, `PATCH`, `DELETE`), the server requires a valid `Origin`.
+- Session writes are now serialized and atomically committed to reduce race-condition data loss.
+
+## README Screenshot Guide
+
+Capture screenshots from a clean local run (`npm run web`) and save them in a new `projects/ollama-chat/docs/images/` folder.
+
+Suggested files:
+- `chat-main.png`
+- `control-center.png`
+- `repo-attach-and-tree.png`
+- `tool-activity.png`
+- `memory-panel.png`
+
+What to capture:
+- **Main chat view (`chat-main.png`)**
+  - Session sidebar visible with at least 2 sessions
+  - Composer with a short prompt
+  - Chat stream result shown
+  - Status bar visible
+- **Control Center (`control-center.png`)**
+  - Tool profile + budget controls visible
+  - Model profile section visible (built-in + custom)
+  - Preset controls visible
+- **Repository attach and tree (`repo-attach-and-tree.png`)**
+  - Attach dialog (or recently attached workspace list)
+  - Repo tree expanded to 1-2 nested directories
+  - File preview pane open
+- **Tool activity (`tool-activity.png`)**
+  - A completed prompt that triggered tools
+  - Tool call + result cards visible
+- **Project memory (`memory-panel.png`)**
+  - Memory summary populated
+  - User notes area visible
+
+How to capture cleanly:
+- Use a dedicated demo session with fake/sanitized prompts.
+- Keep browser zoom at `100%` and use the same window width for all screenshots.
+- Prefer light or dark mode consistently across all captures.
+- Avoid absolute local paths, API tokens, personal names, or private repo names in view.
+- Crop to the app frame only (exclude browser bookmarks/tabs if possible).
+
+Recommended README placement:
+- Add a `## Screenshots` section after `## Browser UI`.
+- Use one short caption per image describing the user task shown.
 
 ## Notes
 

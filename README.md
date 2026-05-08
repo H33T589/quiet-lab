@@ -51,6 +51,14 @@ That directory is intentionally ignored by git because it contains downloaded mo
 
 ## Starter App
 
-A minimal zero-dependency `Ollama` CLI starter lives in [`projects/ollama-chat/`](./projects/ollama-chat).
+A local `Ollama` starter app lives in [`projects/ollama-chat/`](./projects/ollama-chat) with both:
+
+- a minimal CLI chat workflow
+- a browser UI with sessions, repo browsing, tool activity, and project memory
 
 It talks to the local `Ollama` HTTP API directly and is a good baseline before you build anything more agentic.
+
+See:
+- [Run + Browser UI](./projects/ollama-chat/README.md#run)
+- [Environment](./projects/ollama-chat/README.md#environment)
+- [Repo Tools](./projects/ollama-chat/README.md#repo-tools)

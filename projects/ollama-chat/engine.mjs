@@ -1,4 +1,4 @@
-import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -20,6 +20,7 @@ import {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const sessionsDir = path.join(__dirname, "sessions");
+const sessionSaveQueues = new Map();
 
 const defaultBaseUrl = process.env.OLLAMA_BASE_URL || "http://127.0.0.1:11434";
 const defaultModel = process.env.OLLAMA_MODEL || "phi4-mini";
@@ -956,6 +957,21 @@ async function createAvailableSessionId(baseSessionId) {
   throw new Error("Could not create a unique session name.");
 }
 
+function queueSessionSave(sessionId, work) {
+  const key = normalizeSessionId(sessionId);
+  const previous = sessionSaveQueues.get(key) || Promise.resolve();
+  const next = previous.catch(() => {}).then(work);
+  sessionSaveQueues.set(
+    key,
+    next.finally(() => {
+      if (sessionSaveQueues.get(key) === next) {
+        sessionSaveQueues.delete(key);
+      }
+    }),
+  );
+  return next;
+}
+
 export class ChatSession {
   constructor({
     sessionId = "latest",
@@ -998,19 +1014,23 @@ export class ChatSession {
 
   async save() {
     await mkdir(sessionsDir, { recursive: true });
-    this.updatedAt = new Date().toISOString();
-    await writeFile(
-      this.filePath,
-      JSON.stringify(
-        {
-          ...this.toJSON(),
-          updatedAt: this.updatedAt,
-        },
-        null,
-        2,
-      ),
-      "utf8",
+    const nextUpdatedAt = new Date().toISOString();
+    this.updatedAt = nextUpdatedAt;
+    const payload = JSON.stringify(
+      {
+        ...this.toJSON(),
+        updatedAt: nextUpdatedAt,
+      },
+      null,
+      2,
     );
+
+    await queueSessionSave(this.sessionId, async () => {
+      const tempPath = `${this.filePath}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`;
+
+      await writeFile(tempPath, payload, "utf8");
+      await rename(tempPath, this.filePath);
+    });
   }
 
   async load() {

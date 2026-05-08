@@ -5,16 +5,19 @@ import {
   assertRequestAllowed,
   isAllowedHost,
   isAllowedOrigin,
+  isLoopbackRemoteAddress,
   readJsonBody,
 } from "../server.mjs";
 
-function requestLike({ host = "127.0.0.1:4317", method = "GET", origin = null } = {}) {
+function requestLike({ host = "127.0.0.1:4317", method = "GET", origin = null, remoteAddress = "127.0.0.1", token = null } = {}) {
   return {
     headers: {
       host,
       ...(origin ? { origin } : {}),
+      ...(token ? { "x-quiet-lab-token": token } : {}),
     },
     method,
+    socket: { remoteAddress },
   };
 }
 
@@ -52,6 +55,46 @@ test("request guard rejects cross-origin mutation requests", () => {
         }),
       ),
     /Origin is not allowed/,
+  );
+});
+
+test("request guard rejects mutation requests without origin", () => {
+  assert.throws(
+    () => assertRequestAllowed(requestLike({ method: "POST" })),
+    /Origin is not allowed/,
+  );
+});
+
+test("loopback remote address helper accepts local addresses", () => {
+  assert.equal(isLoopbackRemoteAddress("127.0.0.1"), true);
+  assert.equal(isLoopbackRemoteAddress("::1"), true);
+  assert.equal(isLoopbackRemoteAddress("::ffff:127.0.0.1"), true);
+  assert.equal(isLoopbackRemoteAddress("203.0.113.10"), false);
+});
+
+test("request guard rejects non-loopback clients when local mode is required", () => {
+  assert.throws(
+    () =>
+      assertRequestAllowed(requestLike({ remoteAddress: "203.0.113.10" }), "127.0.0.1", {
+        requireLocalRemote: true,
+      }),
+    /Only local loopback clients are allowed/,
+  );
+});
+
+test("request guard requires API token when configured", () => {
+  assert.throws(
+    () =>
+      assertRequestAllowed(requestLike(), "127.0.0.1", {
+        apiToken: "secret-token",
+      }),
+    /API token is required/,
+  );
+
+  assert.doesNotThrow(() =>
+    assertRequestAllowed(requestLike({ token: "secret-token" }), "127.0.0.1", {
+      apiToken: "secret-token",
+    }),
   );
 });
 

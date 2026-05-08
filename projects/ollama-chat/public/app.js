@@ -1,4 +1,5 @@
 const state = {
+  apiToken: "",
   currentFile: null,
   currentRepoPath: ".",
   currentSessionId: null,
@@ -113,6 +114,18 @@ const elements = {
 
 const customPresetStorageKey = "quiet-lab.customPresets.v1";
 const modelProfileStorageKey = "quiet-lab.modelProfiles.v1";
+const apiTokenStorageKey = "quiet-lab.apiToken.v1";
+
+function initializeApiToken() {
+  const tokenFromUrl = new URLSearchParams(window.location.search).get("token");
+  const tokenFromStorage = localStorage.getItem(apiTokenStorageKey);
+  const token = (tokenFromUrl || tokenFromStorage || "").trim();
+  state.apiToken = token;
+
+  if (tokenFromUrl) {
+    localStorage.setItem(apiTokenStorageKey, tokenFromUrl.trim());
+  }
+}
 
 function pickAvailableModel(preferred, availableModels, fallback) {
   const list = Array.isArray(availableModels) ? availableModels : [];
@@ -351,10 +364,14 @@ function renderMarkdown(input) {
 }
 
 async function fetchJson(url, options = {}) {
+  const headers = {
+    "Content-Type": "application/json",
+    ...(state.apiToken ? { "X-Quiet-Lab-Token": state.apiToken } : {}),
+    ...(options.headers || {}),
+  };
+
   const response = await fetch(url, {
-    headers: {
-      "Content-Type": "application/json",
-    },
+    headers,
     ...options,
   });
 
@@ -1276,7 +1293,10 @@ async function streamChat(message) {
   try {
     const response = await fetch("/api/chat/stream", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        ...(state.apiToken ? { "X-Quiet-Lab-Token": state.apiToken } : {}),
+      },
       signal: state.streamAbortController.signal,
       body: JSON.stringify({
         message,
@@ -1421,6 +1441,7 @@ async function streamChat(message) {
 }
 
 async function init() {
+  initializeApiToken();
   loadCustomPresetsFromStorage();
   await loadMeta();
   await loadWorkspace();

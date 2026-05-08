@@ -46,6 +46,7 @@ const publicDir = path.join(__dirname, "public");
 const defaultHost = process.env.OLLAMA_CHAT_HOST || "127.0.0.1";
 const defaultPort = Number.parseInt(process.env.OLLAMA_CHAT_PORT || "4317", 10);
 const defaultModel = process.env.OLLAMA_MODEL || "phi4-mini";
+const defaultApiToken = String(process.env.OLLAMA_CHAT_TOKEN || "").trim();
 const execFileAsync = promisify(execFile);
 const maxJsonBodyBytes = 1_000_000;
 
@@ -173,14 +174,58 @@ export function isAllowedOrigin(originHeader, allowedHost = defaultHost) {
   }
 }
 
-export function assertRequestAllowed(req, allowedHost = defaultHost) {
+function normalizeRemoteAddress(remoteAddress) {
+  return String(remoteAddress || "").replace(/^::ffff:/, "").toLowerCase();
+}
+
+export function isLoopbackRemoteAddress(remoteAddress) {
+  return new Set(["127.0.0.1", "::1", "::"]).has(normalizeRemoteAddress(remoteAddress));
+}
+
+function readRequestToken(req) {
+  const headerToken = String(req.headers["x-quiet-lab-token"] || "").trim();
+
+  if (headerToken) {
+    return headerToken;
+  }
+
+  const authorization = String(req.headers.authorization || "").trim();
+
+  if (/^Bearer\s+/i.test(authorization)) {
+    return authorization.replace(/^Bearer\s+/i, "").trim();
+  }
+
+  return "";
+}
+
+function hasValidApiToken(req, expectedToken) {
+  if (!expectedToken) {
+    return true;
+  }
+
+  return readRequestToken(req) === expectedToken;
+}
+
+export function assertRequestAllowed(
+  req,
+  allowedHost = defaultHost,
+  { requireLocalRemote = false, apiToken = defaultApiToken } = {},
+) {
   if (!isAllowedHost(req.headers.host, allowedHost)) {
     throw new HttpError(403, "Host is not allowed.");
   }
 
+  if (requireLocalRemote && !isLoopbackRemoteAddress(req.socket?.remoteAddress)) {
+    throw new HttpError(403, "Only local loopback clients are allowed.");
+  }
+
+  if (!hasValidApiToken(req, apiToken)) {
+    throw new HttpError(401, "API token is required.");
+  }
+
   if (
     ["POST", "PUT", "PATCH", "DELETE"].includes(req.method || "") &&
-    !isAllowedOrigin(req.headers.origin, allowedHost)
+    (!req.headers.origin || !isAllowedOrigin(req.headers.origin, allowedHost))
   ) {
     throw new HttpError(403, "Origin is not allowed.");
   }
@@ -608,10 +653,15 @@ async function serveStatic(res, pathname) {
   }
 }
 
-export function createQuietLabServer({ host = defaultHost } = {}) {
+export function createQuietLabServer({ host = defaultHost, apiToken = defaultApiToken } = {}) {
+  const requiresLoopbackClient = host !== "0.0.0.0" && host !== "::";
+
   return http.createServer(async (req, res) => {
     try {
-      assertRequestAllowed(req, host);
+      assertRequestAllowed(req, host, {
+        requireLocalRemote: requiresLoopbackClient,
+        apiToken,
+      });
       const url = new URL(req.url || "/", `http://${req.headers.host || "127.0.0.1"}`);
       const pathname = url.pathname;
 
@@ -677,19 +727,29 @@ export function createQuietLabServer({ host = defaultHost } = {}) {
 
       await serveStatic(res, pathname);
     } catch (error) {
-      sendJson(res, error.statusCode || 500, { error: error.message || "Internal server error" });
+      const status = error.statusCode || 500;
+      const message = status >= 500 ? "Internal server error" : error.message;
+      sendJson(res, status, { error: message || "Internal server error" });
     }
   });
 }
 
 export async function startQuietLabServer({ host = defaultHost, port = defaultPort } = {}) {
+  if ((host === "0.0.0.0" || host === "::") && !defaultApiToken) {
+    throw new Error("Set OLLAMA_CHAT_TOKEN when binding quiet-lab to a non-loopback host.");
+  }
+
   await mkdir(sessionsDir, { recursive: true });
   await loadWorkspaceState();
 
-  const server = createQuietLabServer({ host });
+  const server = createQuietLabServer({ host, apiToken: defaultApiToken });
 
-  await new Promise((resolve) => {
-    server.listen(port, host, resolve);
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(port, host, () => {
+      server.removeListener("error", reject);
+      resolve();
+    });
   });
 
   return server;
