@@ -73,7 +73,7 @@ Served from `server.mjs`.
 
 ## Screenshots
 
-Drop screenshots into `docs/images/` using the filenames below:
+
 
 ![Main chat view](./docs/images/chat-main.png)
 _Main chat with session list, composer, and streamed reply._
