@@ -18,6 +18,7 @@ import {
   saveSessionAs,
   sessionsDir,
 } from "./engine.mjs";
+import { isKnownRecommendedModel, isModelInstalled, recommendedModels } from "./model-catalog.mjs";
 import { builtInModelProfiles } from "./model-profiles.mjs";
 import {
   clearProjectMemory,
@@ -145,6 +146,18 @@ async function getSession(sessionId) {
 function sendEvent(res, event, data) {
   res.write(`event: ${event}\n`);
   res.write(`data: ${JSON.stringify(data)}\n\n`);
+}
+
+function ollamaBaseUrl() {
+  return process.env.OLLAMA_BASE_URL || "http://127.0.0.1:11434";
+}
+
+function normalizeModelTag(value) {
+  return String(value || "").trim();
+}
+
+function isSafeModelTag(value) {
+  return /^[A-Za-z0-9._/-]+(?::[A-Za-z0-9._-]+)?$/.test(value);
 }
 
 export function isAllowedHost(hostHeader, allowedHost = defaultHost) {
@@ -311,6 +324,108 @@ async function handleMeta(_req, res) {
         return { name, description: rest.join(": ") };
       }),
   });
+}
+
+async function handleModels(req, res) {
+  if (req.method !== "GET") {
+    sendMethodNotAllowed(res);
+    return;
+  }
+
+  const installedModels = await listAvailableModels();
+  sendJson(res, 200, createModelCatalogPayload(installedModels));
+}
+
+export function createModelCatalogPayload(installedModels) {
+  return {
+    installedModels,
+    recommendedModels: recommendedModels.map((model) => ({
+      ...model,
+      installed: isModelInstalled(model.model, installedModels),
+    })),
+  };
+}
+
+async function handleModelPull(req, res) {
+  if (req.method !== "POST") {
+    sendMethodNotAllowed(res);
+    return;
+  }
+
+  const body = await readJsonBody(req);
+  const model = normalizeModelTag(body.model);
+
+  if (!model) {
+    sendBadRequest(res, "Model tag is required.");
+    return;
+  }
+
+  if (!isKnownRecommendedModel(model) && !isSafeModelTag(model)) {
+    sendBadRequest(res, "Model tag contains unsupported characters.");
+    return;
+  }
+
+  res.writeHead(200, {
+    ...securityHeaders,
+    "Cache-Control": "no-cache, no-transform",
+    Connection: "keep-alive",
+    "Content-Type": "text/event-stream; charset=utf-8",
+  });
+
+  const abortController = new AbortController();
+  const onRequestClosed = () => abortController.abort();
+  req.once("close", onRequestClosed);
+
+  try {
+    sendEvent(res, "status", { model, status: "Starting pull..." });
+    const response = await fetch(`${ollamaBaseUrl()}/api/pull`, {
+      method: "POST",
+      signal: abortController.signal,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model, stream: true }),
+    });
+
+    if (!response.ok || !response.body) {
+      sendEvent(res, "error", {
+        message: `Ollama pull failed (${response.status}).`,
+      });
+      return;
+    }
+
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    for await (const chunk of response.body) {
+      buffer += decoder.decode(chunk, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+
+      for (const line of lines) {
+        if (!line.trim()) {
+          continue;
+        }
+
+        const payload = JSON.parse(line);
+        sendEvent(res, "progress", payload);
+      }
+    }
+
+    if (buffer.trim()) {
+      sendEvent(res, "progress", JSON.parse(buffer));
+    }
+
+    sendEvent(res, "done", {
+      model,
+      installedModels: await listAvailableModels(),
+    });
+  } catch (error) {
+    if (!isAbortError(error)) {
+      sendEvent(res, "error", { message: error.message });
+    }
+  } finally {
+    req.removeListener("close", onRequestClosed);
+    res.end();
+  }
 }
 
 async function handleWorkspace(req, res) {
@@ -667,6 +782,16 @@ export function createQuietLabServer({ host = defaultHost, apiToken = defaultApi
 
       if (pathname === "/api/meta" && req.method === "GET") {
         await handleMeta(req, res);
+        return;
+      }
+
+      if (pathname === "/api/models") {
+        await handleModels(req, res);
+        return;
+      }
+
+      if (pathname === "/api/models/pull") {
+        await handleModelPull(req, res);
         return;
       }
 

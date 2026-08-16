@@ -12,6 +12,7 @@ It now supports:
 - stricter grounded answers for repo questions
 - a local browser UI with sessions, repo browsing, and tool activity
 - model profiles (quick shortcuts to swap Ollama tags) and stop during streaming generation
+- a Model Library panel that recommends Ollama models by use case and can pull them locally
 
 ## Run
 
@@ -95,6 +96,8 @@ _Project memory summary and user notes._
 The header **Model profile** menu switches the active Ollama model tag without resetting chat history (same as changing **Model**, but grouped as shortcuts). Built-in profiles are defined in `model-profiles.mjs` (General → `phi4-mini`, Coding → `qwen2.5-coder:3b`, Heavy → `qwen2.5:7b`). If a tag is not installed locally, the UI falls back to the nearest name match or the server default.
 
 In Control Center you can add **custom model profiles** (name + tag); they are stored in `localStorage` for this browser only.
+
+The Control Center also includes a **Model Library** with recommended Ollama tags for common use cases such as daily chat, coding, reasoning, and vision. Installed models are marked automatically, and **Pull** streams progress from the local Ollama API before refreshing the model picker.
 
 **Stop** cancels an in-flight streamed reply: the browser aborts the request, the server aborts the Ollama call, and the last user message is rolled back so you can edit and resend.
 

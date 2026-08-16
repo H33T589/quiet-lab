@@ -889,6 +889,97 @@ textarea {
   gap: 8px;
 }
 
+.model-library-list {
+  display: grid;
+  gap: 10px;
+}
+
+.model-library-card {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  display: grid;
+  gap: 12px;
+  padding: 12px;
+}
+
+.model-library-main {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.model-library-title {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.model-library-title strong {
+  font: 700 0.88rem/1.2 var(--mono);
+}
+
+.model-library-title span,
+.model-tag-list span,
+.installed-badge,
+.missing-badge {
+  border: 1px solid rgba(125, 226, 209, 0.18);
+  border-radius: 8px;
+  color: var(--muted);
+  font: 0.7rem/1.2 var(--mono);
+  padding: 4px 6px;
+}
+
+.model-library-card code {
+  color: var(--accent);
+  display: block;
+  font: 0.78rem/1.4 var(--mono);
+  margin-top: 6px;
+  overflow-wrap: anywhere;
+}
+
+.model-library-card p {
+  color: var(--muted);
+  font-size: 0.9rem;
+  line-height: 1.45;
+  margin: 0;
+}
+
+.model-tag-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.model-library-actions {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: 1fr 1fr;
+}
+
+.model-library-card progress {
+  accent-color: var(--accent);
+  height: 10px;
+  width: 100%;
+}
+
+.model-library-card small {
+  color: var(--muted);
+  font: 0.74rem/1.35 var(--mono);
+}
+
+.installed-badge {
+  background: rgba(125, 226, 209, 0.1);
+  color: var(--accent);
+}
+
+.missing-badge {
+  background: rgba(255, 149, 120, 0.08);
+  border-color: rgba(255, 149, 120, 0.22);
+  color: var(--danger);
+}
+
 .recent-workspaces {
   display: grid;
   gap: 8px;
