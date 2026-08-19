@@ -272,6 +272,14 @@ button:disabled:hover,
   min-width: 140px;
 }
 
+.drawer-control {
+  min-width: 0;
+}
+
+.quiet-manual-control {
+  display: none;
+}
+
 .control span,
 .search-control span {
   color: var(--muted);
@@ -792,6 +800,32 @@ textarea {
   display: grid;
   gap: 12px;
   padding-top: 16px;
+}
+
+.advanced-settings {
+  border-top: 1px solid var(--line);
+  display: grid;
+  gap: 14px;
+  padding-top: 16px;
+}
+
+.advanced-settings:not([open]) > :not(summary) {
+  display: none;
+}
+
+.advanced-settings summary {
+  color: var(--text);
+  cursor: pointer;
+  font: 700 0.9rem/1.2 var(--mono);
+  list-style-position: outside;
+}
+
+.advanced-settings summary::marker {
+  color: var(--accent);
+}
+
+.advanced-settings .control-panel-section:first-of-type {
+  margin-top: 14px;
 }
 
 .section-copy h4 {
