@@ -9,6 +9,8 @@ const state = {
   meta: null,
   memory: null,
   model: null,
+  modelLibrary: [],
+  modelPull: null,
   preset: null,
   repoEntries: [],
   repoFilter: "",
@@ -74,6 +76,7 @@ const elements = {
   memoryRefreshButton: document.querySelector("#memory-refresh-button"),
   memorySaveButton: document.querySelector("#memory-save-button"),
   memorySummary: document.querySelector("#memory-summary"),
+  modelLibraryList: document.querySelector("#model-library-list"),
   modelProfileSelect: document.querySelector("#model-profile-select"),
   modelSelect: document.querySelector("#model-select"),
   newSessionButton: document.querySelector("#new-session-button"),
@@ -299,6 +302,72 @@ function renderCustomModelProfiles() {
       renderControlCenter();
     });
     elements.customModelProfileList.append(chip);
+  }
+}
+
+function renderModelOptions() {
+  elements.modelSelect.innerHTML = (state.meta?.models || [])
+    .map((model) => `<option value="${escapeHtml(model)}">${escapeHtml(model)}</option>`)
+    .join("");
+  elements.modelSelect.value = state.model || state.meta?.defaultModel || "";
+}
+
+function isModelInstalled(model) {
+  const installedModels = state.meta?.models || [];
+  return installedModels.some((installedModel) => {
+    if (installedModel === model) {
+      return true;
+    }
+
+    return !model.includes(":") && installedModel === `${model}:latest`;
+  });
+}
+
+function renderModelLibrary() {
+  if (!elements.modelLibraryList) {
+    return;
+  }
+
+  elements.modelLibraryList.innerHTML = "";
+
+  if (!state.modelLibrary.length) {
+    elements.modelLibraryList.innerHTML = `<p class="empty-state">No recommendations loaded.</p>`;
+    return;
+  }
+
+  for (const item of state.modelLibrary) {
+    const pulling = state.modelPull?.model === item.model;
+    const installed = item.installed || isModelInstalled(item.model);
+    const card = document.createElement("article");
+    card.className = "model-library-card";
+    card.innerHTML = `
+      <div class="model-library-main">
+        <div>
+          <div class="model-library-title">
+            <strong>${escapeHtml(item.label)}</strong>
+            <span>${escapeHtml(item.size || "")}</span>
+            <span class="${installed ? "installed-badge" : "missing-badge"}">${installed ? "Installed" : "Not installed"}</span>
+          </div>
+          <code>${escapeHtml(item.model)}</code>
+        </div>
+        <p>${escapeHtml(item.useCase)}</p>
+        <div class="model-tag-list">
+          ${(item.tags || []).map((tag) => `<span>${escapeHtml(tag)}</span>`).join("")}
+        </div>
+        ${pulling ? `<progress value="${Number(state.modelPull.progress || 0)}" max="100"></progress><small>${escapeHtml(state.modelPull.status || "Pulling...")}</small>` : ""}
+      </div>
+      <div class="model-library-actions">
+        <button class="ghost-button" type="button" data-action="use">${installed ? "Use" : "Use Tag"}</button>
+        <button class="primary-button" type="button" data-action="pull">${pulling ? "Pulling" : installed ? "Update" : "Pull"}</button>
+      </div>
+    `;
+
+    const [useButton, pullButton] = card.querySelectorAll("button");
+    useButton.disabled = state.sending || pulling;
+    pullButton.disabled = state.sending || Boolean(state.modelPull);
+    useButton.addEventListener("click", () => useModelTag(item.model).catch(showError));
+    pullButton.addEventListener("click", () => pullModel(item.model).catch(showError));
+    elements.modelLibraryList.append(card);
   }
 }
 
@@ -731,6 +800,7 @@ function renderControlCenter() {
 
   renderCustomPresets();
   renderCustomModelProfiles();
+  renderModelLibrary();
   renderMemory();
   renderDiagnostics();
 }
@@ -872,6 +942,11 @@ function syncControls() {
   elements.memoryNotesInput.disabled = state.sending;
   elements.memoryRefreshButton.disabled = state.sending;
   elements.memorySaveButton.disabled = state.sending;
+  if (elements.modelLibraryList) {
+    for (const button of elements.modelLibraryList.querySelectorAll("button")) {
+      button.disabled = button.disabled || state.sending;
+    }
+  }
   elements.sendButton.textContent = "Send";
   if (elements.stopStreamButton) {
     elements.stopStreamButton.disabled = !state.sending;
@@ -920,10 +995,19 @@ async function loadMeta() {
     setStatus("Ollama is offline. Start it on http://127.0.0.1:11434 to send messages.", "error");
   }
 
-  elements.modelSelect.innerHTML = state.meta.models
-    .map((model) => `<option value="${escapeHtml(model)}">${escapeHtml(model)}</option>`)
-    .join("");
+  renderModelOptions();
   renderPresetSelect();
+}
+
+async function loadModelLibrary() {
+  const payload = await fetchJson("/api/models");
+  state.modelLibrary = payload.recommendedModels || [];
+  if (state.meta) {
+    state.meta.models = payload.installedModels?.length
+      ? payload.installedModels
+      : state.meta.models;
+    state.meta.ollamaReachable = Boolean(payload.installedModels?.length);
+  }
 }
 
 async function loadWorkspace() {
@@ -982,6 +1066,123 @@ async function updateTooling(update) {
   };
   setStatus(`Tooling updated: ${state.tooling.config.profile} / ${state.tooling.config.budget}.`, "success");
   render();
+}
+
+async function useModelTag(model) {
+  const installed = isModelInstalled(model);
+
+  if (!installed && state.meta) {
+    state.meta.models = [model, ...(state.meta.models || []).filter((candidate) => candidate !== model)];
+    renderModelOptions();
+  }
+
+  state.model = model;
+  state.activeModelProfileId = "custom";
+  saveModelProfilesToStorage();
+  setStatus(`Using ${model}.`, installed ? "success" : "neutral");
+  await patchSessionModel(model);
+}
+
+function updatePullProgress(payload) {
+  const total = Number(payload.total || 0);
+  const completed = Number(payload.completed || 0);
+  const progress = total > 0 ? Math.round((completed / total) * 100) : state.modelPull?.progress || 0;
+  state.modelPull = {
+    ...(state.modelPull || {}),
+    progress,
+    status: payload.status || state.modelPull?.status || "Pulling...",
+  };
+  setStatus(`${state.modelPull.model}: ${state.modelPull.status}`, "busy");
+  renderControlCenter();
+}
+
+async function pullModel(model) {
+  state.modelPull = { model, progress: 0, status: "Starting pull..." };
+  setStatus(`Pulling ${model} from Ollama...`, "busy");
+  render();
+
+  try {
+    const response = await fetch("/api/models/pull", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(state.apiToken ? { "X-Quiet-Lab-Token": state.apiToken } : {}),
+      },
+      body: JSON.stringify({ model }),
+    });
+
+    if (!response.ok || !response.body) {
+      throw new Error("Model pull request failed.");
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let currentEvent = "message";
+    let currentData = "";
+
+    function flushEvent() {
+      if (!currentData) {
+        return;
+      }
+
+      const payload = JSON.parse(currentData);
+
+      if (currentEvent === "status" || currentEvent === "progress") {
+        updatePullProgress(payload);
+      }
+
+      if (currentEvent === "done") {
+        if (state.meta) {
+          state.meta.models = payload.installedModels?.length
+            ? payload.installedModels
+            : [model, ...(state.meta.models || []).filter((candidate) => candidate !== model)];
+          state.meta.ollamaReachable = true;
+        }
+        setStatus(`${model} is installed.`, "success");
+      }
+
+      if (currentEvent === "error") {
+        throw new Error(payload.message);
+      }
+    }
+
+    while (true) {
+      const { done, value } = await reader.read();
+
+      if (done) {
+        break;
+      }
+
+      buffer += decoder.decode(value, { stream: true });
+      const chunks = buffer.split("\n");
+      buffer = chunks.pop() || "";
+
+      for (const line of chunks) {
+        if (line.startsWith("event: ")) {
+          currentEvent = line.slice(7).trim();
+          continue;
+        }
+
+        if (line.startsWith("data: ")) {
+          currentData = line.slice(6);
+          continue;
+        }
+
+        if (!line.trim()) {
+          flushEvent();
+          currentEvent = "message";
+          currentData = "";
+        }
+      }
+    }
+
+    await loadModelLibrary();
+    renderModelOptions();
+  } finally {
+    state.modelPull = null;
+    render();
+  }
 }
 
 async function loadSessions() {
@@ -1444,6 +1645,7 @@ async function init() {
   initializeApiToken();
   loadCustomPresetsFromStorage();
   await loadMeta();
+  await loadModelLibrary();
   await loadWorkspace();
   await loadTooling();
   await loadMemory();
